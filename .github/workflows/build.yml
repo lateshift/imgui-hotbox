@@ -35,7 +35,17 @@ jobs:
         shell: bash
         run: bash scripts/vendor.sh
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        shell: bash
+        run: |
+          # Dawn fetches about 20 third-party repositories from googlesource.com while
+          # configuring, and a fetch occasionally fails. Retry from a clean Dawn copy.
+          for attempt in 1 2 3; do
+            cmake --preset ${{ matrix.preset }} && exit 0
+            echo "::warning::Configure attempt $attempt failed; retrying with a clean Dawn copy"
+            rm -rf build/${{ matrix.preset }}/dawn-source
+            sleep $((attempt * 30))
+          done
+          exit 1
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --parallel 4
       - name: Test
