@@ -53,6 +53,8 @@ public:
     void menu(Rect rect);
     void target(Rect rect, ImVec4 fill, float outline);
     void focus(Rect rect);
+    void key_cap(Rect rect);
+    void caret(Point from, Point to);
     void separator(Point from, Point to);
     void option_box(Rect rect, ImU32 color);
     void check_mark(Rect rect, bool enabled);

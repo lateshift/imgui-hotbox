@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #ifdef HOTBOX_WITH_SPDLOG
 #include <spdlog/spdlog.h>
@@ -154,6 +155,10 @@ void OverlayView::begin(const Layout& layout, ViewSettings settings, const Typog
     dividers_.clear();
     popup_items_.clear();
     popups_.clear();
+    results_.clear();
+    search_shell_.reset();
+    search_panel_.reset();
+    query_ = {};
     mark_boxes_ = {};
     ticks_top_ = settings.origin.y - row_height * settings.scale / 2;
     ticks_bottom_ = settings.origin.y + row_height * settings.scale / 2;
@@ -220,7 +225,7 @@ void OverlayView::begin(const Layout& layout, ViewSettings settings, const Typog
         layout_strip(strip, center_y);
 
     center_start_ = titles_.size();
-    titles_.push_back({ControlKind::Recent, {}, "Recent Commands", {}, nullptr, false});
+    titles_.push_back({ControlKind::Recent, {}, "Recent Commands"});
     titles_.push_back({ControlKind::Sets, {}, active == layout.sets.end() ? std::string_view("Menu Sets") : active->id});
     titles_.push_back({ControlKind::Controls, {}, "Hotbox Controls"});
     layout_center(center_y);
@@ -308,6 +313,12 @@ void OverlayView::popup(const Registry& registry, const Layout& layout, ControlK
                 }
             }
         }
+    } else if (kind == ControlKind::Recent) {
+        for (const auto& command : overflow) {
+            auto item = Resolve(registry, layout, command);
+            if (item.kind == ControlKind::Command && !item.id.empty())
+                popup_items_.push_back(item);
+        }
     } else if (kind == ControlKind::Sets) {
         for (const auto& set : layout.sets)
             popup_items_.push_back({ControlKind::ChooseSet, set.id, set.id, {}, nullptr, true,
@@ -354,7 +365,8 @@ void OverlayView::popup(const Registry& registry, const Layout& layout, ControlK
         height += (item.kind == ControlKind::Separator ? 9 : menu_row_height) * s;
     }
     if (popup_items_.size() == start) {
-        popup_items_.push_back({ControlKind::Header, {}, "No commands"});
+        popup_items_.push_back({ControlKind::Header, {},
+            kind == ControlKind::Recent ? "No recent commands" : "No commands"});
         height += menu_row_height * s;
     }
     // A dropdown sits 4 pt below the title's shell (the target is inset 4 pt in it) and 16 pt left of
@@ -385,6 +397,61 @@ void OverlayView::popup(const Registry& registry, const Layout& layout, ControlK
                      {box.max.x - 4 * s, std::min(y + h, box.max.y - 4 * s)}};
         y += h;
     }
+}
+
+void OverlayView::search(const Registry& registry, const Layout& layout, std::string_view query,
+    std::span<const SearchRow> rows, bool recent) {
+    const float s = settings_.scale;
+    query_ = query;
+    recent_results_ = recent;
+    results_.clear();
+    for (const auto& row : rows) {
+        auto control = Resolve(registry, layout, row.id);
+        if (control.kind != ControlKind::Command || control.id.empty())
+            continue;
+        control.kind = ControlKind::Result;
+        control.detail = row.path;
+        results_.push_back(control);
+    }
+    const bool icons = std::ranges::any_of(results_, [&](const Control& item) { return HasArtwork(item, settings_.monograms); });
+    results_icon_column_ = icons ? 20 * s : 0;
+    float width = 400 * s;
+    for (const auto& item : results_) {
+        const float detail = item.detail.empty() ? 0 : type_.width(item.detail, TextRole::Caption) + 12 * s;
+        const float shortcut = item.item->shortcut.empty() ? 0 : type_.width(item.item->shortcut, TextRole::Caption) + 16 * s;
+        const float option = item.item->on_option ? 22 * s : 0;
+        width = std::max(width, type_.width(item.label) + 44 * s + detail + shortcut + option + results_icon_column_);
+    }
+    width = std::min(width, settings_.work.size().x - 8 * s);
+    if (results_.empty() && !query.empty())
+        results_.push_back({ControlKind::Header, {}, "No matching commands"});
+
+    // The field sits one row pitch above the top row, so it replaces nothing while the rows fade out.
+    const float top = ticks_top_ - row_pitch * s;
+    const auto field = ClampRect({{settings_.origin.x - width / 2, top},
+        {settings_.origin.x + width / 2, top + row_height * s}}, settings_.work);
+    search_shell_ = field;
+    if (results_.empty())
+        return;
+    // Results hang 4 pt below the field, like a dropdown below its row.
+    const float height = 8 * s + static_cast<float>(results_.size()) * menu_row_height * s;
+    const auto panel = ClampRect({{field.min.x, field.max.y + row_gap * s},
+        {field.max.x, field.max.y + row_gap * s + height}}, settings_.work);
+    search_panel_ = panel;
+    float y = panel.min.y + 4 * s;
+    for (auto& item : results_) {
+        item.rect = {{panel.min.x + 4 * s, y}, {panel.max.x - 4 * s, std::min(y + menu_row_height * s, panel.max.y - 4 * s)}};
+        y += menu_row_height * s;
+    }
+}
+
+const Control* OverlayView::result(Point pointer) const {
+    if (!settings_.work.contains(pointer))
+        return nullptr;
+    const auto hit = std::ranges::find_if(results_, [&](const Control& item) {
+        return item.kind == ControlKind::Result && item.rect.contains(pointer);
+    });
+    return hit == results_.end() ? nullptr : &*hit;
 }
 
 const Control* OverlayView::title(Point pointer) const {
@@ -428,7 +495,8 @@ Rect OverlayView::overflow_anchor(Point pivot) const {
 }
 
 bool OverlayView::over_popup(Point point) const {
-    return std::ranges::any_of(popups_, [&](const auto& popup) { return popup.rect.contains(point); });
+    return std::ranges::any_of(popups_, [&](const auto& popup) { return popup.rect.contains(point); }) ||
+        (search_shell_ && search_shell_->contains(point)) || (search_panel_ && search_panel_->contains(point));
 }
 
 bool OverlayView::on_chrome(Point point) const {
@@ -491,6 +559,16 @@ void OverlayView::draw(ImDrawList& draw, const Theme& theme, const AtlasAssets& 
         const float direction = static_cast<float>((row > 0) - (row < 0));
         return Point{0, direction * 4 * s * (1 - amount)};
     };
+    // The ring travels between targets with motion/move instead of jumping.
+    const auto focus_ring = [&](Rect rect) {
+        const auto owner = motion.owner("focus ring");
+        const bool cut = animation.cut || animation.focus_cut;
+        const auto coordinate = [&](const char* channel, float value) {
+            return motion.tween(owner, channel, value, timing.move, iam_ease_out_quad, value, cut);
+        };
+        paint.focus({{coordinate("x0", rect.min.x), coordinate("y0", rect.min.y)},
+            {coordinate("x1", rect.max.x), coordinate("y1", rect.max.y)}});
+    };
 
     draw.PushClipRect(Vec(settings_.work.min), Vec(settings_.work.max), true);
     if (layer == OverlayLayer::All) {
@@ -521,6 +599,8 @@ void OverlayView::draw(ImDrawList& draw, const Theme& theme, const AtlasAssets& 
             const auto ink_color = title.kind == ControlKind::Sets ? color.accent
                 : title.enabled ? color.pill_ink : color.disabled;
             label(rect, title.label, 10 * s + artwork(title, rect, 10 * s), ink_color);
+            if (animation.focus == &title && show_rows)
+                focus_ring(rect);
         }
         if (settings_.ticks) {
             const bool ready = animation.cut || !motion.enabled() ||
@@ -608,10 +688,12 @@ void OverlayView::draw(ImDrawList& draw, const Theme& theme, const AtlasAssets& 
             paint.opacity(level ? amount : 1);
             paint.menu(Translate(panel.rect, slide));
             std::size_t item_index = 0;
-            for (auto item : popup_items_) {
+            for (const auto& source : popup_items_) {
+                auto item = source;
                 if (item.level != level || item.rect.size().y <= 0)
                     continue;
-                const bool hovered = live && animation.pointer_live && item.rect.contains(pointer);
+                const bool focused = live && animation.focus == &source;
+                const bool hovered = focused || (live && animation.pointer_live && item.rect.contains(pointer));
                 const bool invoked = !animation.invoked.empty() && animation.invoked == item.id;
                 item.rect = Translate(item.rect, slide + Point{
                     !animation.shake_id.empty() && item.id == animation.shake_id ? animation.shake * s : 0, 0});
@@ -650,10 +732,165 @@ void OverlayView::draw(ImDrawList& draw, const Theme& theme, const AtlasAssets& 
                     const Rect hint{{right - shortcut_width, item.rect.min.y}, {right + 1 / grid.density.x, item.rect.max.y}};
                     label(hint, item.item->shortcut, 0, color.ink_secondary, TextRole::Caption);
                 }
+                if (focused)
+                    focus_ring(item.rect);
             }
             if (clipped)
                 draw.PopClipRect();
         }
+    }
+
+    if (layer == OverlayLayer::All && search_shell_) {
+        const float amount = Visibility(motion, motion.owner("search"), "reveal", animation.search_live,
+            timing.popup, iam_ease_out_cubic, iam_ease_in_cubic, animation.cut);
+        if (amount > invisible) {
+            // The field and its results drop 4 pt into place, like the rows above the centre.
+            const Point drop{0, -4 * s * (1 - amount)};
+            const auto field = Translate(*search_shell_, drop);
+            paint.opacity(amount);
+            paint.shell(field);
+            const Rect glyph{field.min + Point{10 * s, (row_height - 16) * 0.5f * s},
+                field.min + Point{26 * s, (row_height + 16) * 0.5f * s}};
+            type_.glyph(draw, grid, glyph, lucide::icon_search, nullptr, paint.ink(color.ink_secondary));
+            const std::size_t count = static_cast<std::size_t>(std::ranges::count(results_, ControlKind::Result, &Control::kind));
+            char summary[32];
+            if (recent_results_)
+                std::snprintf(summary, sizeof(summary), "%s", count ? "Recent" : "");
+            else
+                std::snprintf(summary, sizeof(summary), count == 1 ? "%zu result" : "%zu results", count);
+            const float summary_width = type_.width(summary, TextRole::Caption);
+            const Rect counter{{field.max.x - 12 * s - summary_width, field.min.y},
+                {field.max.x - 12 * s + 1 / grid.density.x, field.max.y}};
+            label(counter, summary, 0, color.ink_secondary, TextRole::Caption);
+            // Long queries scroll so the caret stays in view.
+            const Rect text{{field.min.x + 34 * s, field.min.y},
+                {counter.min.x - (summary_width > 0 ? 12 : 0) * s, field.max.y}};
+            const float query_width = type_.width(query_);
+            const float inset = std::min(0.0f, text.size().x - query_width - 2 * s);
+            label(text, query_, inset, color.ink);
+            const float caret_x = text.min.x + inset + query_width + 1 * s;
+            const float middle = field.min.y + row_height * 0.5f * s;
+            if (animation.search_live)
+                paint.caret({caret_x, middle - 7 * s}, {caret_x, middle + 7 * s});
+
+            if (search_panel_) {
+                paint.menu(Translate(*search_panel_, drop));
+                const auto scope = motion.owner("search results");
+                for (std::size_t index = 0; index < results_.size(); ++index) {
+                    auto item = results_[index];
+                    item.rect = Translate(item.rect, drop + Point{
+                        !animation.shake_id.empty() && item.id == animation.shake_id ? animation.shake * s : 0, 0});
+                    if (item.kind == ControlKind::Header) {
+                        label(item.rect, item.label, 22 * s, color.ink_secondary);
+                        continue;
+                    }
+                    const bool selected = animation.search_live && index == animation.search_selected;
+                    const bool invoked = !animation.invoked.empty() && animation.invoked == item.id;
+                    const bool hovered = animation.search_live && animation.pointer_live && item.rect.contains(pointer);
+                    target(item.rect, item, ImHashData(&index, sizeof(index), scope),
+                        State(item.enabled, selected || invoked, hovered, pressed));
+                    if (item.checked)
+                        paint.check_mark({item.rect.min, {item.rect.min.x + 16 * s, item.rect.max.y}}, item.enabled);
+                    const float option_width = item.item->on_option ? 22 * s : 0;
+                    const float shortcut_width = item.item->shortcut.empty() ? 0
+                        : type_.width(item.item->shortcut, TextRole::Caption);
+                    auto label_rect = item.rect;
+                    label_rect.max.x -= option_width + (shortcut_width > 0 ? shortcut_width + 16 * s : 0);
+                    artwork(item, label_rect, 22 * s);
+                    const float label_inset = 22 * s + results_icon_column_;
+                    label(label_rect, item.label, label_inset, item.enabled ? color.ink : color.disabled);
+                    if (!item.detail.empty())
+                        label(label_rect, item.detail, label_inset + type_.width(item.label) + 12 * s,
+                            color.ink_secondary, TextRole::Caption);
+                    if (option_width > 0) {
+                        const Point min{item.rect.max.x - 16 * s, item.rect.min.y + 6 * s};
+                        paint.option_box({min, min + Point{10, 10} * s}, Painter::color(color.ring));
+                    }
+                    if (shortcut_width > 0) {
+                        const float right = item.rect.max.x - option_width - 8 * s;
+                        const Rect hint{{right - shortcut_width, item.rect.min.y},
+                            {right + 1 / grid.density.x, item.rect.max.y}};
+                        label(hint, item.item->shortcut, 0, color.ink_secondary, TextRole::Caption);
+                    }
+                }
+            }
+        }
+    }
+    draw.PopClipRect();
+}
+
+TooltipContent TooltipFor(const ItemDesc& item, bool enabled) {
+    TooltipContent content;
+    content.title = item.label.empty() ? std::string_view(item.alt_text) : std::string_view(item.label);
+    content.shortcut = item.shortcut;
+    if (!enabled && !item.disabled_reason.empty()) {
+        content.body = item.disabled_reason;
+        content.warning = true;
+    } else if (!item.tooltip.empty()) {
+        content.body = item.tooltip;
+    } else if (!item.alt_text.empty() && item.alt_text != content.title) {
+        content.body = item.alt_text;
+    }
+    return content;
+}
+
+void OverlayView::tooltip(ImDrawList& draw, const Theme& theme, const AtlasAssets& atlas, PixelGrid grid,
+    const Typography& type, Rect work, float scale, float rounding, Point anchor, std::optional<Rect> beside,
+    const TooltipContent& content, float opacity) {
+    const float s = scale;
+    const float pad = 10 * s, max_body = 280 * s;
+    // Markdown-lite: **bold** and `code` markers are dropped. Inter has no shaping for either.
+    std::string body;
+    body.reserve(content.body.size());
+    for (std::size_t i = 0; i < content.body.size(); ++i) {
+        if (content.body[i] == '`' || (content.body.compare(i, 2, "**") == 0 && ++i))
+            continue;
+        body += content.body[i];
+    }
+    std::vector<std::string_view> lines;
+    float body_width = 0;
+    for (std::size_t start = 0; start < body.size();) {
+        std::size_t end = start, fit = start;
+        while (end < body.size()) {
+            auto next = body.find(' ', end + 1);
+            next = next == std::string::npos ? body.size() : next;
+            if (type.width(std::string_view(body).substr(start, next - start), TextRole::Caption) > max_body && fit > start)
+                break;
+            fit = end = next;
+        }
+        const auto line = std::string_view(body).substr(start, fit - start);
+        body_width = std::max(body_width, type.width(line, TextRole::Caption));
+        lines.push_back(line);
+        start = fit + 1;
+    }
+    const float key_width = content.shortcut.empty() ? 0 : type.width(content.shortcut, TextRole::Caption) + 12 * s;
+    const float width = 2 * pad + std::max(type.width(content.title) + (key_width > 0 ? key_width + 12 * s : 0), body_width);
+    const float height = (12 + 20 + 16 * static_cast<float>(lines.size())) * s;
+    if (beside) {
+        // Keyboard tooltips stand beside the focused row's menu, so they never hide the next rows.
+        constexpr float gap = 4 + 8;
+        anchor = {beside->max.x + gap * s, beside->min.y - 4 * s};
+        if (anchor.x + width > work.max.x)
+            anchor.x = beside->min.x - gap * s - width;
+    }
+    const auto box = ClampRect({anchor, anchor + Point{width, height}}, work);
+    Painter paint(draw, theme, atlas, grid, s);
+    paint.opacity(opacity);
+    paint.rounding(rounding);
+    draw.PushClipRect(Vec(work.min), Vec(work.max), true);
+    paint.menu(box);
+    const Rect title{{box.min.x, box.min.y + 6 * s}, {box.max.x, box.min.y + 26 * s}};
+    type.label(draw, grid, title, content.title, pad, paint.ink(theme.colors.ink));
+    if (key_width > 0) {
+        const Rect key{{box.max.x - pad - key_width, title.min.y + 2 * s}, {box.max.x - pad, title.max.y - 2 * s}};
+        paint.key_cap(key);
+        type.label(draw, grid, key, content.shortcut, 6 * s, paint.ink(theme.colors.key_ink), TextRole::Caption);
+    }
+    float y = title.max.y;
+    for (const auto line : lines) {
+        type.label(draw, grid, {{box.min.x, y}, {box.max.x, y + 16 * s}}, line, pad,
+            paint.ink(theme.colors.ink_secondary), TextRole::Caption);
+        y += 16 * s;
     }
     draw.PopClipRect();
 }

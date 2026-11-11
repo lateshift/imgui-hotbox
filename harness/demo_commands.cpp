@@ -123,12 +123,23 @@ DemoCommands::DemoCommands(bool private_icons) {
     snap_item.on_invoke = [this](const auto& ctx) { snap = !snap; last_command = ctx.id; };
     auto snap_handle = registry.add(std::move(snap_item));
     snap_handle.release();
-    registry.update("edit.undo", [](auto& item) { item.shortcut = undo_shortcut; });
+    registry.update("edit.undo", [](auto& item) {
+        item.shortcut = undo_shortcut;
+        item.tooltip = "Reverse the last change to the scene.";
+    });
     registry.update("edit.redo", [](auto& item) { item.shortcut = redo_shortcut; });
     registry.update("edit.duplicate", [&](auto& item) {
         item.shortcut = duplicate_shortcut;
         item.icon = DemoIcon("duplicate", private_icons);
+        item.tooltip = "Copy the selected objects in place. Hold **Shift** to open the options.";
+        item.keywords = {"copy", "clone"};
     });
+    registry.update("edit-mesh.extrude", [](auto& item) {
+        item.tooltip = "Pull the selected faces out along their normals.";
+        item.keywords = {"pull", "extend"};
+    });
+    registry.update("create.cube", [](auto& item) { item.keywords = {"box", "primitive"}; });
+    registry.update("create.sphere", [](auto& item) { item.keywords = {"ball", "primitive"}; });
     registry.update("edit.duplicate-special", [this](auto& item) {
         item.on_option = [this](const auto& ctx) { last_command = std::string(ctx.id) + " options"; };
     });

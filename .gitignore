@@ -23,3 +23,6 @@ __pycache__/
 /vendor/dawn/third_party/vulkan-loader/src/
 /vendor/dawn/third_party/vulkan-utility-libraries/src/
 /vendor/dawn/third_party/webgpu-headers/src/
+
+# The interactive harness keeps its ImGui and hotbox state here.
+hotbox_harness.ini

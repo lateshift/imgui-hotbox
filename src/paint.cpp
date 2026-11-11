@@ -318,7 +318,14 @@ void Painter::target(Rect rect, ImVec4 fill, float outline) {
     rounded_rect(rect, radius(4), color(fill), color(edge));
 }
 
-void Painter::focus(Rect rect) { rounded_rect(rect, radius(4), 0, color(theme_.colors.focus), 2); }
+// The focus ring is a 2 pt inside border, as the design system's focus styles.
+void Painter::focus(Rect rect) {
+    rounded_rect(rect, radius(4), 0, color(theme_.colors.focus), 2 * scale_ * grid_.density.x);
+}
+void Painter::key_cap(Rect rect) {
+    rounded_rect(rect, radius(4), color(theme_.colors.key_fill), color(theme_.colors.key_edge));
+}
+void Painter::caret(Point from, Point to) { line(from, to, color(theme_.colors.ink)); }
 void Painter::separator(Point from, Point to) { line(from, to, color(theme_.colors.edge)); }
 void Painter::option_box(Rect rect, ImU32 ink) { rounded_rect(rect, radius(1), 0, ink); }
 

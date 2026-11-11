@@ -72,7 +72,8 @@ endif()
 
 add_library(hotbox STATIC src/theme.cpp src/fonts.cpp src/log.cpp
     src/icons.cpp src/registry.cpp src/layout.cpp src/geometry.cpp src/gesture.cpp src/state.cpp
-    src/atlas.cpp src/paint.cpp src/overlay.cpp src/motion.cpp src/hotbox.cpp)
+    src/atlas.cpp src/paint.cpp src/overlay.cpp src/motion.cpp src/search.cpp src/persistence.cpp
+    src/hotbox.cpp)
 add_library(hotbox::hotbox ALIAS hotbox)
 target_include_directories(hotbox PUBLIC "${PROJECT_SOURCE_DIR}/include"
     PRIVATE "${PROJECT_SOURCE_DIR}/vendor/lucide")

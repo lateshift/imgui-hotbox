@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 using namespace hotbox;
 
@@ -73,6 +75,11 @@ struct Script {
     void release_space() { io().AddKeyEvent(ImGuiKey_Space, false); frames(); }
     void key(ImGuiKey key) { io().AddKeyEvent(key, true); frames(); io().AddKeyEvent(key, false); frames(); }
     void move(float x, float y) { io().AddMousePosEvent(x, y); frames(); }
+    void type(std::string_view text) {
+        for (const char ch : text)
+            io().AddInputCharacter(static_cast<unsigned char>(ch));
+        frames();
+    }
     void mouse(int button, bool down) { io().AddMouseButtonEvent(button, down); frames(); }
 };
 
@@ -496,4 +503,158 @@ TEST_CASE("Releasing on a disabled overflow row does not select the underlying d
     script.mouse(ImGuiMouseButton_Left, false);
     CHECK(calls == 0);
     CHECK(script.box.is_open());
+}
+
+TEST_CASE("Typing searches without leaking text and keeps a released chord open until Enter") {
+    Script script;
+    int calls = 0;
+    auto extrude = Action("mesh.extrude", [&](const auto& ctx) {
+        ++calls;
+        CHECK(ctx.source == InvokeSource::Search);
+        CHECK_FALSE(ctx.option_box);
+    });
+    extrude.label = "Extrude";
+    auto bevel = Action("mesh.bevel", [](const auto&) { FAIL("the wrong command ran"); });
+    bevel.label = "Bevel";
+    const auto first = script.registry.add(std::move(extrude));
+    const auto second = script.registry.add(std::move(bevel));
+    REQUIRE((first && second));
+    script.registry.menu("mesh", "Mesh").item("mesh.bevel").item("mesh.extrude");
+    script.chord();
+    script.frames(20);
+    REQUIRE(script.box.is_open());
+    script.type("ex");
+    CHECK(script.literal_x == 0);
+    script.release_alt();
+    script.release_space();
+    script.frames(5);
+    REQUIRE(script.box.is_open());
+    script.key(ImGuiKey_Enter);
+    script.frames(2);
+    CHECK(calls == 1);
+    CHECK_FALSE(script.box.is_open());
+}
+
+TEST_CASE("Esc clears the search, then closes the hotbox") {
+    Script script;
+    const auto command = script.registry.add(Action("apple", [](const auto&) { FAIL("Esc ran a command"); }));
+    REQUIRE(command);
+    script.box.open({320, 240});
+    script.frames(5);
+    script.type("ap");
+    script.key(ImGuiKey_Escape);
+    CHECK(script.box.is_open());
+    script.key(ImGuiKey_Escape);
+    CHECK_FALSE(script.box.is_open());
+}
+
+TEST_CASE("Tab, arrows and Enter run a dropdown command from the keyboard") {
+    Script script;
+    std::vector<std::string> ran;
+    const auto record = [&](const InvokeContext& ctx) {
+        ran.emplace_back(ctx.id);
+        CHECK(ctx.source == InvokeSource::Keyboard);
+    };
+    const auto undo = script.registry.add(Action("edit.undo", record));
+    const auto redo = script.registry.add(Action("edit.redo", record));
+    REQUIRE((undo && redo));
+    script.registry.menu("edit", "Edit").item("edit.undo").separator().item("edit.redo");
+    script.box.open({320, 240});
+    script.frames(20);
+    script.key(ImGuiKey_Tab);   // Edit, the first title from the top.
+    script.key(ImGuiKey_Enter); // Opens the dropdown on Undo.
+    script.key(ImGuiKey_DownArrow);  // Skips the separator.
+    script.key(ImGuiKey_Enter);
+    script.frames(2);
+    CHECK(ran == std::vector<std::string>{"edit.redo"});
+    CHECK_FALSE(script.box.is_open());
+}
+
+TEST_CASE("Recent Commands lists invoked commands and runs them with the Recent source") {
+    Script script;
+    std::vector<InvokeSource> sources;
+    const auto undo = script.registry.add(Action("edit.undo", [&](const auto& ctx) { sources.push_back(ctx.source); }));
+    REQUIRE(undo);
+    script.registry.menu("edit", "Edit").item("edit.undo");
+    script.box.open({320, 240});
+    script.frames(20);
+    script.key(ImGuiKey_Tab);
+    script.key(ImGuiKey_Enter);
+    script.key(ImGuiKey_Enter);
+    script.frames(30);
+    REQUIRE(script.box.recent_commands().size() == 1);
+    CHECK(script.box.recent_commands()[0] == "edit.undo");
+
+    script.box.open({320, 240});
+    script.frames(20);
+    script.key(ImGuiKey_LeftArrow);  // Arrows start on the menu-set button.
+    script.key(ImGuiKey_LeftArrow);  // Recent Commands.
+    script.key(ImGuiKey_Enter);
+    script.key(ImGuiKey_Enter);
+    script.frames(2);
+    CHECK(sources == std::vector<InvokeSource>{InvokeSource::Keyboard, InvokeSource::Recent});
+}
+
+TEST_CASE("Recent commands and the menu set persist in imgui.ini and through export_state") {
+    Script script;
+    const auto undo = script.registry.add(Action("edit.undo", [](const auto&) {}));
+    REQUIRE(undo);
+    script.registry.menu("edit", "Edit").item("edit.undo");
+    script.registry.menu("mesh", "Mesh");
+    script.registry.menu("rig", "Skeleton");
+    script.registry.define_menu_set("Modeling", {"mesh"});
+    script.registry.define_menu_set("Rigging", {"rig"});
+    script.registry.set_active_menu_set("Modeling");
+    script.box.open({320, 240});
+    script.frames(20);
+    script.key(ImGuiKey_Tab);
+    script.key(ImGuiKey_Enter);
+    script.key(ImGuiKey_Enter);
+    script.frames(30);
+    script.registry.set_active_menu_set("Rigging");
+    script.frames(2);
+
+    const std::string ini = ImGui::SaveIniSettingsToMemory();
+    CHECK(ini.find("[Hotbox][Default]\n") != std::string::npos);
+    CHECK(ini.find("Recent=edit.undo\n") != std::string::npos);
+    CHECK(ini.find("MenuSet=Rigging\n") != std::string::npos);
+    const auto exported = script.box.export_state();
+    CHECK(exported.find("Rows=1\n") != std::string::npos);
+
+    script.box.clear_history();
+    CHECK(script.box.recent_commands().empty());
+    script.registry.set_active_menu_set("Modeling");
+    ImGui::LoadIniSettingsFromMemory(ini.c_str());
+    script.frames(3);
+    REQUIRE(script.box.recent_commands().size() == 1);
+    CHECK(script.box.recent_commands()[0] == "edit.undo");
+    CHECK(script.registry.save_layout().find("active-menu-set Rigging") != std::string::npos);
+
+    Config config;
+    config.settings_id = "Second";
+    Hotbox second(script.registry, config);
+    second.import_state(exported);
+    REQUIRE(second.recent_commands().size() == 1);
+    CHECK(second.recent_commands()[0] == "edit.undo");
+    const std::string both = ImGui::SaveIniSettingsToMemory();
+    CHECK(both.find("[Hotbox][Second]\n") != std::string::npos);
+    CHECK(both.find("[Hotbox][Default]\n") != std::string::npos);
+}
+
+TEST_CASE("A focused command shows its tooltip after the delay") {
+    Script script;
+    auto item = Action("edit.undo", [](const auto&) {});
+    item.tooltip = "Undo the **last** change";
+    const auto command = script.registry.add(std::move(item));
+    REQUIRE(command);
+    script.registry.menu("edit", "Edit").item("edit.undo");
+    script.box.open({320, 240});
+    script.frames(20);
+    script.key(ImGuiKey_Tab);
+    script.key(ImGuiKey_Enter);
+    script.frames(30);
+    const int before = script.overlay_vertices;
+    CHECK(script.box.is_animating());
+    script.frames(40);
+    CHECK(script.overlay_vertices > before);
 }

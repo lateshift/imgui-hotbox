@@ -3,6 +3,8 @@
 #include "overlay.hpp"
 #include "gesture.hpp"
 #include "log.hpp"
+#include "persistence.hpp"
+#include "search.hpp"
 #include "state.hpp"
 #include "system_appearance.hpp"
 
@@ -10,8 +12,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <exception>
+#include <map>
 #include <numbers>
 #include <utility>
 
@@ -41,6 +45,39 @@ void Capture(ImGuiIO& io) {
     const auto end = std::remove(queue.begin(), queue.end(), static_cast<ImWchar>(0x00A0));
     if (end != queue.end())
         queue.resize(static_cast<int>(end - queue.begin()));
+}
+
+// Keys the open hotbox reads for search and keyboard navigation. Owning them keeps host widgets
+// and ImGui's own navigation from reacting while the hotbox is open.
+constexpr std::array<ImGuiKey, 9> navigation_keys{
+    ImGuiKey_Tab, ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_UpArrow, ImGuiKey_DownArrow,
+    ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Backspace, ImGuiKey_Escape,
+};
+
+constexpr auto none = static_cast<std::size_t>(-1);
+
+std::int64_t Now() {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void AppendUtf8(std::string& text, ImWchar ch) {
+    char utf8[5];
+    const int length = ImTextCharToUtf8(utf8, ch);
+    text.append(utf8, static_cast<std::size_t>(length));
+}
+
+void PopUtf8(std::string& text) {
+    while (!text.empty()) {
+        const auto byte = static_cast<unsigned char>(text.back());
+        text.pop_back();
+        if ((byte & 0xC0) != 0x80)
+            break;
+    }
+}
+
+bool Selectable(const Control& control) {
+    return control.kind != ControlKind::Separator && control.kind != ControlKind::Header;
 }
 
 ImGuiViewport* ViewportAt(Point point) {
@@ -126,7 +163,7 @@ struct Event {
 
 } // namespace
 
-struct Hotbox::Impl {
+struct Hotbox::Impl final : SettingsClient {
     Registry& registry;
     Config config;
     Theme light = Theme::IFCStudioLight();
@@ -153,6 +190,29 @@ struct Hotbox::Impl {
     ImGuiID new_frame_hook = 0, shutdown_hook = 0, viewport_id = 0;
     bool view_changed = false;
 
+    // Search, recent commands and saved state.
+    History history;
+    std::string query, restored_set;
+    bool searching = false, recent_results = false;
+    std::vector<ImWchar> typed;
+    std::vector<SearchRow> search_rows;
+    std::size_t search_selected = 0;
+    std::uint64_t search_revision = 0;
+
+    // Keyboard focus. Titles are kept by kind and ID; dropdown rows by position in their level.
+    bool keyboard = false, focus_cut = false;
+    std::optional<Popup> focus_title;
+    std::vector<std::size_t> focus_items;
+    Point last_pointer;
+
+    // Tooltip for the hovered or focused command.
+    ImGuiID tip_hash = 0;
+    double tip_since = 0;
+    const ItemDesc* tip_item = nullptr;
+    bool tip_enabled = true;
+    Point tip_anchor;
+    std::optional<Rect> tip_beside;
+
     explicit Impl(Registry& registry, Config cfg) : registry(registry), config(std::move(cfg)) {
         view.reserve(layout());
         exiting_view.reserve(layout());
@@ -160,9 +220,15 @@ struct Hotbox::Impl {
         popups.reserve(4);
         drawn_popups.reserve(4);
         exiting_popups.reserve(4);
+        typed.reserve(16);
+        focus_items.reserve(4);
+        // Registering before the host's first NewFrame() lets ImGui hand us our imgui.ini section.
+        if (auto* current = ImGui::GetCurrentContext())
+            AttachSettings(*current, *this);
     }
 
-    ~Impl() {
+    ~Impl() override {
+        DetachSettings(*this, context != nullptr);
         if (context) {
             atlas.release(context->IO.Fonts);
             ImGui::RemoveContextHook(context, new_frame_hook);
@@ -170,7 +236,60 @@ struct Hotbox::Impl {
         }
     }
 
+    std::string_view settings_id() const override { return config.settings_id; }
+
+    void begin_settings() override {
+        history.clear();
+        restored_set.clear();
+    }
+
+    void read_setting(std::string_view line) override {
+        if (history.read(line))
+            return;
+        const auto value = [&](std::string_view key) -> std::optional<std::string_view> {
+            if (!line.starts_with(key) || line.size() <= key.size() || line[key.size()] != '=')
+                return std::nullopt;
+            return line.substr(key.size() + 1);
+        };
+        if (const auto set = value("MenuSet"))
+            restored_set = *set;
+        else if (const auto rows = value("Rows"))
+            config.show_menu_rows = *rows != "0";
+        else if (const auto ticks = value("Ticks"))
+            config.show_zone_ticks = *ticks != "0";
+    }
+
+    void write_settings(std::string& out) const override {
+        history.write(out);
+        const auto& active = restored_set.empty() ? layout().active_set : restored_set;
+        if (!active.empty())
+            out += "MenuSet=" + active + "\n";
+        out += config.show_menu_rows ? "Rows=1\n" : "Rows=0\n";
+        out += config.show_zone_ticks ? "Ticks=1\n" : "Ticks=0\n";
+    }
+
+    void settings_changed() const {
+        if (context && !config.settings_id.empty() && ImGui::GetCurrentContext() == context)
+            ImGui::MarkIniSettingsDirty();
+    }
+
+    /// Apply a saved menu set once the host has defined it.
+    void restore_menu_set() {
+        if (restored_set.empty())
+            return;
+        const auto& sets = layout().sets;
+        if (std::ranges::find(sets, restored_set, &MenuSet::id) != sets.end()) {
+            if (layout().active_set != restored_set)
+                registry.set_active_menu_set(restored_set);
+            restored_set.clear();
+        }
+    }
+
     const Layout& layout() const { return RegistryAccess::get(registry).current.layout; }
+    /// The open hotbox locks navigation keys to its hook, so it must read them as that owner.
+    bool Pressed(ImGuiKey key, bool repeat = true) const {
+        return ImGui::IsKeyPressed(key, repeat ? ImGuiInputFlags_Repeat : ImGuiInputFlags_None, new_frame_hook);
+    }
     bool is_open() const { return trigger.phase() == Phase::Open; }
     const Theme& resolved_theme() const {
         return (theme_mode == ThemeMode::System ? system_mode : theme_mode) == ThemeMode::Dark ? dark : light;
@@ -202,18 +321,27 @@ struct Hotbox::Impl {
         hook.UserData = this;
         hook.Type = ImGuiContextHookType_NewFramePost;
         hook.Callback = [](ImGuiContext* ctx, ImGuiContextHook* entry) {
-            const auto& self = *static_cast<Impl*>(entry->UserData);
+            auto& self = *static_cast<Impl*>(entry->UserData);
             if (self.trigger.phase() != Phase::Closed)
                 Capture(ctx->IO);
             if (self.is_open()) {
                 for (const auto button : mouse_buttons)
                     ImGui::SetKeyOwner(ImGui::MouseButtonToKey(button), entry->HookId, ImGuiInputFlags_LockThisFrame);
+                for (const auto key : navigation_keys)
+                    ImGui::SetKeyOwner(key, entry->HookId, ImGuiInputFlags_LockThisFrame);
+                // Typing searches: take the characters before any host widget can see them.
+                if (self.config.enable_search) {
+                    auto& queue = ctx->IO.InputQueueCharacters;
+                    self.typed.insert(self.typed.end(), queue.begin(), queue.end());
+                    queue.resize(0);
+                }
             }
         };
         new_frame_hook = ImGui::AddContextHook(context, &hook);
         hook.Type = ImGuiContextHookType_Shutdown;
         hook.Callback = [](ImGuiContext*, ImGuiContextHook* entry) {
             auto& self = *static_cast<Impl*>(entry->UserData);
+            DetachSettings(self, false);
             self.atlas.forget();
             self.context = nullptr;
             self.viewport_id = 0;
@@ -221,6 +349,7 @@ struct Hotbox::Impl {
             self.toast.reset();
         };
         shutdown_hook = ImGui::AddContextHook(context, &hook);
+        AttachSettings(*context, *this);
     }
 
     bool can_open() const {
@@ -319,6 +448,8 @@ struct Hotbox::Impl {
                 SPDLOG_LOGGER_INFO(logger(), "Hotbox invoked '{}' via {} in {:.1f} ms",
                     event.invocation.id, SourceName(event.invocation.source), event.latency_ms);
 #endif
+                history.record(event.invocation.id, Now());
+                settings_changed();
                 Notify(event.invocation.option_box ? event.item->on_option : event.item->on_invoke,
                     event.invocation.id, event.invocation);
                 Notify(std::function(widget.on_invoked), event.invocation.id, event.invocation);
@@ -488,7 +619,8 @@ struct Hotbox::Impl {
             if (!anchor)
                 return i;
             const auto rect = anchor->rect;
-            target.popup(registry, layout(), popup.kind, popup.id, rect, i);
+            target.popup(registry, layout(), popup.kind, popup.id, rect, i,
+                popup.kind == ControlKind::Recent ? history.recent() : std::span<const CommandId>{});
         }
         return list.size();
     }
@@ -514,18 +646,21 @@ struct Hotbox::Impl {
         popups.push_back({ControlKind::Submenu, std::string(item.id)});
     }
 
-    void popup_click(const Control& item, Point pointer, float scale) {
+    void popup_click(const Control& item, bool option, InvokeSource source = InvokeSource::MenuRow) {
         if (!item.enabled)
             return;
+        if (item.level < popups.size() && popups[item.level].kind == ControlKind::Recent)
+            source = InvokeSource::Recent;
         switch (item.kind) {
         case ControlKind::Command:
-            enqueue(item, InvokeSource::MenuRow, ImGuiMouseButton_Left,
-                pointer.x >= item.rect.max.x - 22 * scale);
+            enqueue(item, source, ImGuiMouseButton_Left, option);
             break;
         case ControlKind::ChooseSet:
             registry.set_active_menu_set(item.id);
+            restored_set.clear();
             popups.clear();
             view_changed = true;
+            settings_changed();
             break;
         case ControlKind::Pin:
             trigger.set_pinned(!trigger.pinned());
@@ -536,27 +671,63 @@ struct Hotbox::Impl {
             config.show_menu_rows = !config.show_menu_rows;
             popups.clear();
             view_changed = true;
+            settings_changed();
             break;
         case ControlKind::Ticks:
             config.show_zone_ticks = !config.show_zone_ticks;
             popups.clear();
             view_changed = true;
+            settings_changed();
             break;
         default: break;
         }
     }
 
-    void idle_input(Point pointer, const ImGuiIO& io, float scale) {
+    void search_pointer(Point pointer, const ImGuiIO& io, float scale, bool moved) {
+        const auto* hit = view.result(pointer);
+        if (hit) {
+            const auto index = static_cast<std::size_t>(hit - view.results().data());
+            if (moved)
+                search_selected = index;
+            if (io.MouseClicked[ImGuiMouseButton_Left])
+                enqueue(*hit, InvokeSource::Search, ImGuiMouseButton_Left,
+                    io.KeyShift || pointer.x >= hit->rect.max.x - 22 * scale);
+            if (io.MouseReleased[ImGuiMouseButton_Left] &&
+                hit->rect.contains(PointOf(io.MouseClickedPos[ImGuiMouseButton_Left])))
+                shake(*hit, true);
+            return;
+        }
+        // While searching the rows are hidden, so a press anywhere but the search closes the hotbox.
+        for (const int button : mouse_buttons) {
+            if (io.MouseClicked[button] && !view.on_chrome(pointer)) {
+                close();
+                return;
+            }
+        }
+    }
+
+    void idle_input(Point pointer, const ImGuiIO& io, float scale, bool moved) {
+        if (std::ranges::any_of(mouse_buttons, [&](int button) { return io.MouseClicked[button]; })) {
+            keyboard = false;
+            focus_items.clear();
+        }
+        if (searching) {
+            search_pointer(pointer, io, scale, moved);
+            return;
+        }
         const auto* hit = view.popup_item(pointer);
         if (hit) {
-            if (hit->kind == ControlKind::Submenu)
-                hover_submenu(*hit);
-            else if (hit->level + 1 < popups.size()) {
-                popups.resize(hit->level + 1);
-                view_changed = true;
+            // Keyboard focus owns the dropdowns until the pointer moves again.
+            if (!keyboard) {
+                if (hit->kind == ControlKind::Submenu)
+                    hover_submenu(*hit);
+                else if (hit->level + 1 < popups.size()) {
+                    popups.resize(hit->level + 1);
+                    view_changed = true;
+                }
             }
             if (io.MouseClicked[ImGuiMouseButton_Left])
-                popup_click(*hit, pointer, scale);
+                popup_click(*hit, pointer.x >= hit->rect.max.x - 22 * scale);
             if (io.MouseReleased[ImGuiMouseButton_Left] &&
                 hit->rect.contains(PointOf(io.MouseClickedPos[ImGuiMouseButton_Left])))
                 shake(*hit, true);
@@ -580,6 +751,409 @@ struct Hotbox::Impl {
                 close();
             return;
         }
+    }
+
+    void reset_session() {
+        searching = recent_results = false;
+        query.clear();
+        search_rows.clear();
+        search_selected = 0;
+        typed.clear();
+        keyboard = false;
+        focus_title.reset();
+        focus_items.clear();
+        tip_hash = 0;
+        tip_item = nullptr;
+    }
+
+    // ---- Search ------------------------------------------------------------------------------
+
+    void rank_search() {
+        const auto& snapshot = RegistryAccess::get(registry).current;
+        search_revision = snapshot.revision;
+        search_rows.clear();
+        search_selected = 0;
+        recent_results = query.empty();
+
+        // The first menu path that reaches each command, e.g. "Edit › Group".
+        std::map<std::string_view, std::string, std::less<>> paths;
+        const auto walk = [&](const auto& self, const Menu& menu, const std::string& prefix, int depth) -> void {
+            for (const auto& entry : menu.entries) {
+                if (entry.kind == EntryKind::Item)
+                    paths.try_emplace(entry.text, prefix);
+                else if (entry.kind == EntryKind::Submenu && depth < 4)
+                    if (const auto* child = snapshot.layout.find_menu(entry.text))
+                        self(self, *child, prefix + " \xE2\x80\xBA " + child->label, depth + 1);
+            }
+        };
+        for (const auto& menu : snapshot.layout.menus) {
+            if (menu.top_level)
+                walk(walk, menu, menu.label, 0);
+        }
+        const auto path_of = [&](std::string_view id) {
+            const auto match = paths.find(id);
+            return match == paths.end() ? std::string{} : match->second;
+        };
+        const auto visible = [](const ItemDesc& item) {
+            try {
+                return !item.is_visible || item.is_visible();
+            } catch (...) {
+                return false;
+            }
+        };
+        const auto searchable = [&](const ItemDesc& item) {
+            return item.kind != ItemKind::Separator && item.kind != ItemKind::Header &&
+                item.kind != ItemKind::Submenu && (item.on_invoke || item.on_option) && visible(item);
+        };
+
+        if (recent_results) {
+            for (const auto& id : history.recent()) {
+                const auto match = snapshot.items.find(id);
+                if (match != snapshot.items.end() && searchable(match->second->desc))
+                    search_rows.push_back({id, path_of(id)});
+            }
+            return;
+        }
+        std::vector<std::string> entry_paths;
+        std::vector<SearchEntry> entries;
+        entry_paths.reserve(snapshot.items.size());
+        entries.reserve(snapshot.items.size());
+        for (const auto& [id, item] : snapshot.items) {
+            const auto& desc = item->desc;
+            if (!searchable(desc))
+                continue;
+            entry_paths.push_back(path_of(id));
+            entries.push_back({desc.id, desc.label.empty() ? std::string_view(desc.alt_text) : std::string_view(desc.label),
+                desc.alt_text, {}, desc.keywords});
+        }
+        for (std::size_t i = 0; i < entries.size(); ++i)
+            entries[i].path = entry_paths[i];
+        std::vector<SearchHit> hits;
+        RankSearch(entries, query, history, Now(), 8, hits);
+        for (const auto& hit : hits)
+            search_rows.push_back({CommandId(entries[hit.entry].id), entry_paths[hit.entry]});
+    }
+
+    void build_search(OverlayView& target) {
+        if (searching)
+            target.search(registry, layout(), query, search_rows, recent_results);
+    }
+
+    void search_input(const ImGuiIO& io, bool held, bool pin_toggled) {
+        bool changed = false;
+        for (const ImWchar ch : typed) {
+            if (ch < 0x20 || ch == 0x7F || ch == 0xA0)
+                continue;
+            // Space is the trigger: it separates words only once the trigger is released.
+            if (ch == ' ' && (query.empty() || held))
+                continue;
+            if (pin_toggled && (ch == 'p' || ch == 'P'))
+                continue;
+            AppendUtf8(query, ch);
+            changed = true;
+        }
+        typed.clear();
+        if (changed && !searching) {
+            searching = true;
+            popups.clear();
+            focus_items.clear();
+            keyboard = false;
+            view_changed = true;
+        }
+        if (!searching)
+            return;
+        if (Pressed(ImGuiKey_Backspace) && !query.empty()) {
+            if (io.KeyCtrl || io.KeySuper)
+                query.clear();
+            else
+                PopUtf8(query);
+            changed = true;
+        }
+        if (changed || search_revision != RegistryAccess::get(registry).current.revision) {
+            rank_search();
+            view.search(registry, layout(), query, search_rows, recent_results);
+            view_changed = true;
+        }
+        const auto results = view.results();
+        const auto count = static_cast<std::size_t>(std::ranges::count(results, ControlKind::Result, &Control::kind));
+        if (!count)
+            return;
+        if (Pressed(ImGuiKey_DownArrow))
+            search_selected = (search_selected + 1) % count;
+        if (Pressed(ImGuiKey_UpArrow))
+            search_selected = (search_selected + count - 1) % count;
+        search_selected = std::min(search_selected, count - 1);
+        if (Pressed(ImGuiKey_Enter, false) || Pressed(ImGuiKey_KeypadEnter, false)) {
+            const auto& choice = results[search_selected];
+            if (choice.enabled)
+                enqueue(choice, InvokeSource::Search, ImGuiMouseButton_Left, io.KeyShift);
+            else
+                shake(choice, true);
+        }
+    }
+
+    bool consume_escape() {
+        if (searching && !query.empty()) {
+            query.clear();
+            rank_search();
+            view_changed = true;
+            return true;
+        }
+        if (keyboard && !popups.empty()) {
+            popups.resize(focus_items.empty() ? 0 : focus_items.size() - 1);
+            if (!focus_items.empty())
+                focus_items.pop_back();
+            view_changed = true;
+            return true;
+        }
+        return false;
+    }
+
+    // ---- Keyboard navigation -----------------------------------------------------------------
+
+    const Control* focused_title() const {
+        return focus_title ? view.anchor(focus_title->kind, focus_title->id, 0) : nullptr;
+    }
+
+    const Control* level_item(std::size_t level, std::size_t position) const {
+        std::size_t n = 0;
+        for (const auto& control : view.popup_items()) {
+            if (control.level == level && n++ == position)
+                return &control;
+        }
+        return nullptr;
+    }
+
+    /// The next selectable row of a dropdown level, wrapping. `from == none` starts at an end.
+    std::size_t step_item(std::size_t level, std::size_t from, int direction) const {
+        std::size_t size = 0;
+        for (const auto& control : view.popup_items())
+            size += control.level == level;
+        if (!size)
+            return none;
+        std::size_t at = from == none ? (direction > 0 ? size - 1 : 0) : from;
+        for (std::size_t i = 0; i < size; ++i) {
+            at = (at + size + static_cast<std::size_t>(direction)) % size;
+            if (const auto* control = level_item(level, at); control && Selectable(*control))
+                return at;
+        }
+        return none;
+    }
+
+    const Control* focus_control() {
+        if (!keyboard)
+            return nullptr;
+        if (!focus_items.empty()) {
+            const auto level = focus_items.size() - 1;
+            auto& position = focus_items.back();
+            if (position == none)
+                position = step_item(level, none, 1);
+            return position == none ? nullptr : level_item(level, position);
+        }
+        return focused_title();
+    }
+
+    std::vector<const Control*> ordered_titles() const {
+        std::vector<const Control*> titles;
+        for (const auto& title : view.titles()) {
+            if (title.rect.size().x > 0 && title.enabled)
+                titles.push_back(&title);
+        }
+        std::ranges::sort(titles, [](const Control* a, const Control* b) {
+            return a->row != b->row ? a->row < b->row : a->rect.min.x < b->rect.min.x;
+        });
+        return titles;
+    }
+
+    void focus_on(const Control& title) {
+        focus_title = Popup{title.kind, std::string(title.id)};
+        view_changed = true;
+    }
+
+    bool title_open(const Control& title) const {
+        return !popups.empty() && popups[0].kind == title.kind && popups[0].id == title.id;
+    }
+
+    void open_focused(const Control& title) {
+        if (!title_open(title)) {
+            popups.clear();
+            popups.push_back({title.kind, std::string(title.id)});
+        }
+        focus_items.assign(1, none);
+        view_changed = true;
+    }
+
+    void activate(const Control& item, bool option) {
+        if (!item.enabled) {
+            shake(item, true);
+            return;
+        }
+        if (item.kind == ControlKind::Submenu) {
+            hover_submenu(item);
+            focus_items.push_back(none);
+            return;
+        }
+        popup_click(item, option, InvokeSource::Keyboard);
+        focus_items.clear();
+    }
+
+    void keyboard_input(const ImGuiIO& io) {
+        const bool tab = Pressed(ImGuiKey_Tab), left = Pressed(ImGuiKey_LeftArrow);
+        const bool right = Pressed(ImGuiKey_RightArrow), up = Pressed(ImGuiKey_UpArrow);
+        const bool down = Pressed(ImGuiKey_DownArrow);
+        const bool enter = Pressed(ImGuiKey_Enter, false) || Pressed(ImGuiKey_KeypadEnter, false);
+        if (!(tab || left || right || up || down || enter))
+            return;
+        focus_cut = !keyboard;
+        keyboard = true;
+        view_changed = true;
+        const auto titles = ordered_titles();
+        if (titles.empty())
+            return;
+        const auto* current = focused_title();
+        const auto found = std::ranges::find(titles, current);
+        if (!current || found == titles.end()) {
+            // Arrows start at the menu-set button in the middle, Tab at either end.
+            const auto sets = std::ranges::find(titles, ControlKind::Sets, &Control::kind);
+            const auto* start = !popups.empty() ? view.anchor(popups[0].kind, popups[0].id, 0) : nullptr;
+            start = start ? start : tab ? (io.KeyShift ? titles.back() : titles.front())
+                : sets != titles.end() ? *sets : titles.front();
+            focus_on(*start);
+            focus_items.clear();
+            if (!popups.empty())
+                focus_items.assign(1, none);
+            return;
+        }
+        const auto at = static_cast<std::size_t>(found - titles.begin());
+        const auto neighbour = [&](int direction) -> const Control* {
+            const auto next = static_cast<std::ptrdiff_t>(at) + direction;
+            if (next < 0 || next >= static_cast<std::ptrdiff_t>(titles.size()))
+                return nullptr;
+            const auto* candidate = titles[static_cast<std::size_t>(next)];
+            return candidate->row == current->row ? candidate : nullptr;
+        };
+        const auto cycle = [&](bool backwards) {
+            popups.clear();
+            focus_items.clear();
+            focus_on(*titles[(at + (backwards ? titles.size() - 1 : 1)) % titles.size()]);
+        };
+
+        if (!focus_items.empty()) {
+            const auto level = focus_items.size() - 1;
+            if (level >= popups.size()) {
+                focus_items.resize(popups.size());
+                return;
+            }
+            auto& position = focus_items.back();
+            if (position == none)
+                position = step_item(level, none, 1);
+            const auto* item = position == none ? nullptr : level_item(level, position);
+            if (tab) {
+                cycle(io.KeyShift);
+            } else if (up || down) {
+                position = step_item(level, position, down ? 1 : -1);
+            } else if (enter || (right && item && item->kind == ControlKind::Submenu)) {
+                if (item)
+                    activate(*item, io.KeyShift);
+            } else if (left && level > 0) {
+                popups.resize(level);
+                focus_items.pop_back();
+            } else if (left || right) {
+                // Like a menu bar: the neighbouring title opens its own dropdown.
+                if (const auto* next = neighbour(left ? -1 : 1)) {
+                    focus_on(*next);
+                    popups.clear();
+                    open_focused(*next);
+                }
+            }
+            return;
+        }
+
+        if (tab) {
+            cycle(io.KeyShift);
+        } else if (left || right) {
+            if (const auto* next = neighbour(left ? -1 : 1)) {
+                focus_on(*next);
+                if (!popups.empty()) {
+                    popups.clear();
+                    popups.push_back({next->kind, std::string(next->id)});
+                }
+            }
+        } else if (down && title_open(*current)) {
+            focus_items.assign(1, none);
+        } else if (up || down) {
+            // Move to the nearest title in the next row up or down.
+            const auto center = (current->rect.min.x + current->rect.max.x) * 0.5f;
+            const Control* best = nullptr;
+            for (const auto* title : titles) {
+                if (down ? title->row <= current->row : title->row >= current->row)
+                    continue;
+                if (best && title->row != best->row &&
+                    (down ? title->row > best->row : title->row < best->row))
+                    continue;
+                const auto distance = std::abs((title->rect.min.x + title->rect.max.x) * 0.5f - center);
+                const auto best_distance = best ? std::abs((best->rect.min.x + best->rect.max.x) * 0.5f - center) : 0.0f;
+                if (!best || title->row != best->row || distance < best_distance)
+                    best = title;
+            }
+            if (best) {
+                focus_on(*best);
+                popups.clear();
+            }
+        } else if (enter) {
+            open_focused(*current);
+        }
+    }
+
+    // ---- Tooltips ----------------------------------------------------------------------------
+
+    void update_tooltip(Point pointer, const ImGuiIO& io, float scale, const std::array<Control, 8>& choices) {
+        tip_item = nullptr;
+        const Control* control = nullptr;
+        Point anchor = pointer + Point{14, 18} * scale;
+        tip_beside.reset();
+        if (!is_open()) {
+        } else if (keyboard) {
+            control = focus_control();
+            if (control)
+                tip_beside = control->rect;
+        } else if (mark && mark->gesture.visible()) {
+            if (const auto direction = view.mark_at(pointer))
+                control = &choices[static_cast<unsigned>(*direction)];
+        } else if (std::ranges::none_of(mouse_buttons, [&](int button) { return io.MouseDown[button]; })) {
+            control = searching ? view.result(pointer) : view.popup_item(pointer);
+        }
+        const ItemDesc* item = control && Selectable(*control) ? control->item : nullptr;
+        if (!item || (TooltipFor(*item, control->enabled).body.empty() && !item->label.empty())) {
+            tip_hash = 0;
+            return;
+        }
+        const auto kind = static_cast<ImGuiID>(control->kind) + (static_cast<ImGuiID>(control->level) << 8);
+        const auto hash = ImHashStr(item->id.c_str(), item->id.size(), ImHashData(&kind, sizeof(kind)));
+        const double now = ImGui::GetTime();
+        if (hash != tip_hash) {
+            tip_hash = hash;
+            tip_since = now;
+        }
+        // Follow the pointer until the tooltip appears, then stay put.
+        if ((now - tip_since) * 1000 < config.tooltip_delay_ms || keyboard)
+            tip_anchor = anchor;
+        tip_item = item;
+        tip_enabled = control->enabled;
+    }
+
+    void draw_tooltip(ImDrawList& draw, const Theme& theme, const Typography& type, PixelGrid grid,
+        Rect work, float scale, float rounding) {
+        const bool waiting = tip_item && (ImGui::GetTime() - tip_since) * 1000 < config.tooltip_delay_ms;
+        const bool showing = tip_item && !waiting;
+        if (waiting)
+            motion.keep_rendering();
+        const float alpha = motion.tween(motion.owner("tooltip"), "opacity", showing ? 1.0f : 0.0f,
+            theme.motion.popup, iam_ease_out_cubic, 0, !showing);
+        if (!showing || alpha <= 0.001f)
+            return;
+        OverlayView::tooltip(draw, theme, atlas, grid, type, work, scale, rounding, tip_anchor, tip_beside,
+            TooltipFor(*tip_item, tip_enabled), alpha);
     }
 
     float shake_offset(const Theme& theme) {
@@ -665,7 +1239,7 @@ struct Hotbox::Impl {
             marking->revealed = now;
             marking->first = Sector(pointer - marking->gesture.pivot(), 0).value_or(Dir::N);
         }
-        const bool show_rows = (live || hold) && !ahead && !visible && !(hold && marking);
+        const bool show_rows = (live || hold) && !ahead && !visible && !(hold && marking) && !searching;
         if (show_rows && !rows_visible)
             rows_opened = now;
         rows_visible = show_rows;
@@ -687,6 +1261,7 @@ struct Hotbox::Impl {
                     choices = mark_choices(*marking);
                 build_mark(view, *marking, choices);
             }
+            build_search(view);
         }
         const auto* active_title = paint_popups.empty() ? nullptr
             : view.anchor(paint_popups[0].kind, paint_popups[0].id, 0);
@@ -696,10 +1271,14 @@ struct Hotbox::Impl {
             : popups.size() + static_cast<std::size_t>(overflow_live);
         const auto scope = marking ? mark_scope(*marking) : 0;
         draw_exiting_layers(draw, theme, type, grid, settings, marking, pointer, rounding);
-        view.draw(draw, theme, atlas, grid,
-            {motion, rounding, now - rows_opened, marking ? now - marking->revealed.value_or(now) : 0,
-                scope, marking ? marking->first : Dir::N, active_count, visible, live, cut_close || ahead,
-                invoked, hold, hold_last, shaken, shake},
+        OverlayAnimation animation{motion, rounding, now - rows_opened,
+            marking ? now - marking->revealed.value_or(now) : 0, scope, marking ? marking->first : Dir::N,
+            active_count, visible, live && !keyboard, cut_close || ahead, invoked, hold, hold_last, shaken, shake};
+        animation.search_live = live && searching;
+        animation.search_selected = search_selected;
+        animation.focus = live ? focus_control() : nullptr;
+        animation.focus_cut = std::exchange(focus_cut, false);
+        view.draw(draw, theme, atlas, grid, animation,
             pointer, live && pressed, config.scrim_opacity, (live || hold) && !ahead,
             show_rows, active_title, marking ? &choices : nullptr,
             marking ? marking->gesture.armed() : std::nullopt,
@@ -739,6 +1318,7 @@ struct Hotbox::Impl {
         pending_frame = false;
         auto& registry_data = RegistryAccess::get(registry);
         RegistryFrame read(registry_data, context, ImGui::GetFrameCount());
+        restore_menu_set();
         auto& io = ImGui::GetIO();
         const float dt = io.DeltaTime * 1000;
         const bool pointer_valid = ImGui::IsMousePosValid();
@@ -751,18 +1331,25 @@ struct Hotbox::Impl {
         const bool starting = pressed && trigger.phase() == Phase::Closed && can_open();
         const bool held = ImGui::IsNamedKey(key) && ImGui::IsKeyDown(key);
         const bool arming = trigger.phase() == Phase::Arming;
+        // Esc first clears the search or closes a keyboard dropdown, then closes the hotbox.
+        const bool escape = trigger.phase() != Phase::Closed && Pressed(ImGuiKey_Escape, false);
+        const bool escape_used = escape && was_open && !mark && consume_escape();
         const bool cancel = trigger.phase() != Phase::Closed &&
-            (io.AppFocusLost || (arming && active_text) || ImGui::IsKeyPressed(ImGuiKey_Escape, false));
-        const bool toggle_pin = was_open && held && ImGui::IsKeyPressed(ImGuiKey_P, false);
+            (io.AppFocusLost || (arming && active_text) || (escape && !escape_used));
+        // While the trigger is held, P pins. Once searching, P is just a letter.
+        const bool toggle_pin = was_open && held && !searching && ImGui::IsKeyPressed(ImGuiKey_P, false);
         if (starting)
             viewport_id = ViewportAt(pointer)->ID;
-        auto transition = trigger.step({dt, pointer, pointer_valid, starting, held, cancel, toggle_pin},
-            config.hold_threshold_ms);
+        // A search keeps the hotbox open after the trigger is released, so both hands can type.
+        auto transition = trigger.step({dt, pointer, pointer_valid, starting, held || (searching && was_open),
+            cancel, toggle_pin}, config.hold_threshold_ms);
         if (arming && transition == Transition::Opened && !can_open()) {
             trigger.close();
             transition = Transition::None;
         }
         signal(transition);
+        if (transition == Transition::Opened)
+            reset_session();
         if (trigger.phase() != Phase::Closed || was_open)
             Capture(io);
 
@@ -804,18 +1391,36 @@ struct Hotbox::Impl {
                 popups.resize(build_popups(view, popups));
                 if (was_visible)
                     build_mark(view, *mark, choices);
+                build_search(view);
             }
             view_changed = false;
+            const bool moved = pointer_valid && !(pointer == last_pointer);
+            last_pointer = pointer;
+            if (moved && keyboard) {
+                keyboard = false;
+                focus_items.clear();
+                view_changed = true;
+            }
             const bool can_resolve = prepared && pointer_valid &&
                 (is_open() || (mark && io.MouseReleased[mark->button]));
             if (mark && can_resolve) {
                 mark_step(pointer, dt, scale, io, choices);
             } else if (!mark && is_open() && pointer_valid) {
-                idle_input(pointer, io, scale);
-            } else if (prepared && !mark && was_open && pointer_valid && transition == Transition::Closed && !held) {
+                if (config.enable_search)
+                    search_input(io, held, toggle_pin);
+                if (!searching)
+                    keyboard_input(io);
+                idle_input(pointer, io, scale, moved);
+            } else if (prepared && !mark && was_open && pointer_valid && transition == Transition::Closed && !held &&
+                !keyboard && !searching) {
                 if (const auto* hit = view.popup_item(pointer); hit && hit->kind == ControlKind::Command)
                     enqueue(*hit, InvokeSource::MenuRow, ImGuiMouseButton_Left, io.KeyShift);
             }
+            typed.clear();
+            if (prepared && pointer_valid)
+                update_tooltip(pointer, io, scale, choices);
+            else
+                tip_item = nullptr;
 
             if (!is_open())
                 clear_session();
@@ -828,6 +1433,7 @@ struct Hotbox::Impl {
                 draw_overlay(*foreground, theme, type, grid, settings, choices, was_visible, prepared,
                     pointer, io.MouseDown[ImGuiMouseButton_Left], rounding);
             draw_toast(*foreground, theme, type, grid, settings.work, scale, rounding);
+            draw_tooltip(*foreground, theme, type, grid, settings.work, scale, rounding);
         }
         cut_close = false;
         dispatch(widget);
@@ -843,6 +1449,7 @@ void Hotbox::open(ImVec2 screen_pos) {
     if ((ImGui::GetCurrentContext() && TextInputActive()) || !impl_->can_open())
         return;
     impl_->clear_session();
+    impl_->reset_session();
     impl_->pending_frame = true;
     impl_->hold_until = 0;
     impl_->invoked.clear();
@@ -888,5 +1495,32 @@ void Hotbox::set_system_appearance_provider(std::function<ThemeMode()> provider)
 }
 
 const Theme& Hotbox::current_theme() const { return impl_->resolved_theme(); }
+
+std::string Hotbox::export_state() const {
+    std::string out;
+    impl_->write_settings(out);
+    return out;
+}
+
+void Hotbox::import_state(std::string_view state) {
+    impl_->begin_settings();
+    for (std::size_t start = 0; start < state.size();) {
+        auto end = std::min(state.find('\n', start), state.size());
+        auto line = state.substr(start, end - start);
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        if (!line.empty())
+            impl_->read_setting(line);
+        start = end + 1;
+    }
+    impl_->pending_frame = true;
+}
+
+std::span<const CommandId> Hotbox::recent_commands() const { return impl_->history.recent(); }
+
+void Hotbox::clear_history() {
+    impl_->history.clear();
+    impl_->settings_changed();
+}
 
 } // namespace hotbox

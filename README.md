@@ -7,9 +7,9 @@ with or endorsed by Autodesk (see [Credits and trademarks](#credits-and-trademar
 
 <p align="center">
   <img src="docs/media/hotbox-tour.gif" width="840"
-       alt="Holding Alt+Space opens the hotbox at the pointer. A menu title is clicked and an item run by releasing Space, then a marking menu is used by dragging, then a fast flick runs a command without the menu appearing, and finally the centre button switches the menu set.">
+       alt="Holding Alt+Space opens the hotbox at the pointer. A menu title is clicked and an item run by releasing Space, then a marking menu is used by dragging, then a fast flick runs a command without the menu appearing, the centre button switches the menu set, and finally typing ext finds Extrude, which Enter runs.">
   <br>
-  <sub>An 18-second tour, rendered from the harness.
+  <sub>A 22-second tour, rendered from the harness.
   <a href="docs/media/hotbox-tour.mp4">Full-resolution MP4</a></sub>
 </p>
 
@@ -20,9 +20,9 @@ with or endorsed by Autodesk (see [Credits and trademarks](#credits-and-trademar
 - Ships with a GLFW + Dawn (WebGPU) harness to try it and to render
   deterministic screenshots.
 
-**Status:** milestones M0–M4 are done (core model, drawing, motion, theming).
-M5 is next: search, recent commands, tooltips and full keyboard navigation
-are planned but not built yet.
+**Status:** milestones M0–M5 are done (core model, drawing, motion, theming,
+search, recent commands, tooltips, keyboard navigation and saved state).
+M6, harness polish, is next.
 
 Contents:
 
@@ -102,8 +102,9 @@ circle with a 36 pt radius around the opening point.
 | Keep it open | Keep holding **Space**. You can let go of ⌥ / Alt once it is open. |
 | Close | Release **Space**. |
 | Invoke from a menu | Release **Space** while the pointer is over a menu item ("release to invoke"), or click the item. |
-| Cancel | Press **Esc**, or click empty space that has no marking menu. |
+| Cancel | Press **Esc**, or click empty space that has no marking menu. Esc first clears a search, or closes a dropdown you opened from the keyboard. |
 | Pin it open | Press **P** while holding the trigger, or choose **Hotbox Controls → Pin Hotbox**. A pinned hotbox stays open after you release Space and after a command runs. Close it with Esc or a click outside. |
+| Search | Start typing. See [Search](#search). |
 
 A **quick tap** of the trigger (shorter than 180 ms, without moving the
 mouse) does not open the hotbox. The application receives it as a separate
@@ -117,7 +118,9 @@ still reaches your text fields there.
 - **Above the centre row:** the common menus (File, Edit, …) and the panel
   menus (View, Shading, Lighting, Show, Renderer, Panels).
 - **Centre row:**
-  - **Recent Commands** on the left (not active yet: recents arrive in M5).
+  - **Recent Commands** on the left lists the last eight commands you ran,
+    from any menu, marking menu or search. They are remembered between
+    sessions.
   - The **menu-set button** in the middle shows the active menu set (here
     "Modeling") in the accent colour. Click it to switch sets.
   - **Hotbox Controls** on the right: Pin Hotbox, and switches for Menu Rows
@@ -137,7 +140,9 @@ it opens the command's settings before running it). Holding
 Shift while you release Space over the row does the same.
 
 Disabled items are drawn in the disabled text colour and give a short
-shake if you try to use them.
+shake if you try to use them. Rest the pointer on one for half a second and
+a tooltip says why it is disabled. Other commands show their description
+the same way.
 
 ### Marking menus
 
@@ -175,6 +180,42 @@ command's name. With practice, a whole command becomes
 "⌥Space + flick", which is faster than any menu and needs no memorised
 key combinations.
 
+### Search
+
+With the hotbox open, **just type**. The menu rows fade out and a search
+field appears above them, listing up to eight matching commands with their
+menu path and shortcut.
+
+- Matching is forgiving: `dup` finds Duplicate, `ext` finds Extrude, and
+  `pcube` finds Polygon Cube. Case and accents are ignored. Several words
+  must all match, in the label, the command's description, its keywords or
+  its menu path (`mesh comb`).
+- Commands you use often and recently rank higher.
+- **↑ / ↓** move the selection, **Enter** runs it, **Shift+Enter** runs its
+  option box. You can also click a result.
+- Once you are searching you can let go of the trigger: the hotbox stays
+  open until you run a command, press **Esc** twice (the first clears the
+  field) or click outside.
+- While you still hold the trigger, **P** pins instead of typing a "p", and
+  Space is ignored. After pinning, or once the search has started, every key
+  types.
+- With an empty field the list shows your recent commands.
+
+### Keyboard
+
+Everything in the rows works without the mouse:
+
+| Key | Does |
+|---|---|
+| **Tab** / **Shift+Tab** | Move through the menu titles, row by row from the top. |
+| **← →** | The previous or next title in the same row. In an open dropdown, switch to the neighbouring title's dropdown, or open and close submenus. |
+| **↑ ↓** | The nearest title in the row above or below. In a dropdown, the previous or next item. |
+| **Enter** | Open the focused title's dropdown, or run the focused item. **Shift+Enter** runs its option box. |
+| **Esc** | Close the innermost dropdown, then the hotbox. |
+
+A focus ring marks the keyboard focus. It hides when you move the mouse, so
+the mouse and the keyboard never fight over the same highlight.
+
 ### Tips for learning
 
 - Start with the menu rows. They work like a normal menu bar.
@@ -191,8 +232,7 @@ key combinations.
   sees it. Change the other app's shortcut, change `Config::trigger`, or use
   the harness's **Open Hotbox** button. Some Linux window managers (GNOME)
   reserve Alt+Space for their window menu.
-- Search, recent commands, tooltips (including `disabled_reason`) and
-  Tab/arrow-key navigation arrive in M5.
+- Search does not yet highlight the letters that matched.
 - Only the Solid material is available. Frost needs a blurred backdrop from
   the renderer and is a later add-on.
 
@@ -224,6 +264,11 @@ Things to try:
   Special…), a disabled item (Delete History) and shortcut hints.
 - **View → Cameras → Additional Cameras**: nested submenus.
 - Menu-set button: switch between **Modeling** and **Rigging**.
+- Open the hotbox and type `dup`, `extr` or `box`, then press Enter.
+- Press Tab, Enter and the arrow keys to walk the menus without the mouse.
+- Rest the pointer on **Edit → Delete History** to see why it is disabled.
+- Run a few commands, then open **Recent Commands**. The interactive
+  harness keeps them in `hotbox_harness.ini` in the working directory.
 - Left-press in the North zone and flick up-right quickly: mark-ahead runs
   Isometric without showing the menu.
 - The panel's **Theme**, **Shape**, **Motion speed**, **Reduced motion** and
@@ -321,12 +366,12 @@ Designated initialisers must follow the declaration order shown in this table.
 |---|---|
 | `id` | **Required.** Unique, stable id such as `"edit.duplicate"`. `add()` logs and returns an empty handle for a duplicate. |
 | `label` | Text shown in rows and menus. May be empty for an icon-only item. |
-| `alt_text` | Required when `label` is empty. Used as the fallback label and the monogram source; reserved for tooltips, search and accessibility. |
-| `tooltip` | Longer description (`**bold**`, `` `code` ``). Stored for M5; not drawn yet. |
-| `disabled_reason` | Why the item is disabled. Stored for M5 tooltips; not drawn yet. |
+| `alt_text` | Required when `label` is empty. Used as the fallback label and the monogram source, searched, and shown in the tooltip when there is no `tooltip`. Kept for a future accessibility bridge. |
+| `tooltip` | Longer description, shown after the hover delay. `**bold**` and `` `code` `` markers are accepted and drawn as plain text. |
+| `disabled_reason` | Why the item is disabled. Replaces the tooltip text while `is_enabled` returns false. |
 | `icon` | See [Icons](#icons). Default `Icon::none()`. |
 | `shortcut` | Shortcut hint drawn at the right of menu rows. It does **not** bind a key. |
-| `keywords` | Extra search terms (for M5 search). |
+| `keywords` | Extra search terms. |
 | `kind` | `Action` (default), `Toggle`, `Radio`, `Submenu`, `Separator` or `Header`. |
 | `radio_group` | Group name for `Radio` items. The host decides which one is checked. |
 | `on_invoke` | Runs when the command is chosen. |
@@ -511,13 +556,33 @@ bool open = widget.is_open();
 | `on_open`, `on_close` | Called when it opens or closes. |
 | `on_trigger_tap` | A quick tap of the trigger that did not open the hotbox. |
 | `on_invoked` | Global observer for every invocation (logging, analytics, macro recording). Called in addition to the item's own callback. |
+| `recent_commands()` | The last eight commands run, most recent first. |
+| `clear_history()` | Forget recent commands and the use counts that rank search results. |
+| `export_state()` / `import_state(text)` | The saved state as text, for hosts that keep settings outside `imgui.ini`. |
 | `set_motion`, `motion_prefs`, `is_animating` | See [Motion](#motion). |
 | `set_theme`, `set_theme_mode`, `set_system_appearance_provider`, `current_theme` | See [Theming](#theming). |
 
 While the hotbox is open it sets `io.WantCaptureMouse` and
 `io.WantCaptureKeyboard`, so your application should check those flags as
-usual and ignore input. On macOS it also swallows the non-breaking space
-that ⌥Space types.
+usual and ignore input. It takes the typed characters for its search, owns
+Tab, the arrow keys, Enter, Backspace and Esc for the frame, and on macOS
+swallows the non-breaking space that ⌥Space types.
+
+#### Saved state
+
+Each hotbox saves its recent commands, use times (which rank search
+results), active menu set and the Menu Rows and Zone Ticks switches in the
+host's `imgui.ini`, as a `[Hotbox][Default]` section. Nothing else is
+needed if your application already uses `io.IniFilename`.
+
+- Construct the `Hotbox` before the first `ImGui::NewFrame()` so ImGui hands
+  it its section while loading. A hotbox created later reads the section
+  from `io.IniFilename` itself.
+- Give a second hotbox in the same context its own `Config::settings_id`.
+  An empty ID turns saving off.
+- If you keep settings elsewhere, store `export_state()` and pass it back
+  to `import_state()`. The text is the same `key=value` lines as in the ini
+  file.
 
 #### `Config`
 
@@ -531,9 +596,11 @@ that ⌥Space types.
 | `dead_zone_pt` | 12 | Radius around the press point where nothing is selected. |
 | `show_menu_rows` | true | Show the menu rows (the user can toggle this in Hotbox Controls). |
 | `show_zone_ticks` | true | Show the diagonal zone ticks. |
-| `enable_search` | true | Reserved for M5 search. |
+| `enable_search` | true | Typing while the hotbox is open searches all registered commands. |
 | `monogram_fallback` | true | Draw monograms for icon-less, label-less items. |
 | `scrim_opacity` | 0.35 | Multiplied with the theme's scrim alpha. |
+| `tooltip_delay_ms` | 500 | How long the pointer or keyboard focus rests on a command before its tooltip appears. |
+| `settings_id` | `"Default"` | Section name in `imgui.ini` (see [Saved state](#saved-state)). Empty disables saving. |
 | `can_open` | empty | Return `false` to veto opening. |
 
 #### `InvokeContext`
@@ -729,7 +796,10 @@ build/macos-debug/hotbox_harness --scenario open-close --theme light --scale 2 \
 | `mark-ahead` | A mark-ahead stroke with its ink and toast. |
 | `open-close` | The open and close transitions. |
 | `theme-shape` | An animated theme and shape change. |
-| `tour` | The scripted 18-second tour at the top of this README, with a drawn pointer, key caps and captions. |
+| `search` | Typing `du` and its results. |
+| `keyboard` | Tab, arrows and Enter down the Edit menu, with the focus ring and a disabled item's tooltip. |
+| `recent` | The Recent Commands dropdown, opened from the keyboard. |
+| `tour` | The scripted 22-second tour at the top of this README, with a drawn pointer, key caps and captions. |
 
 `scripts/record_tour.sh` renders the `tour` scenario and writes
 `docs/media/hotbox-tour.gif` (shown inline above) and

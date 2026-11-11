@@ -26,11 +26,16 @@ struct InvokeContext {
 struct ItemDesc {
     CommandId id;
     std::string label;
+    /// Required when `label` is empty. Searched, and shown in the tooltip when `tooltip` is empty.
     std::string alt_text;
+    /// Shown after the hover delay. `**bold**` and `code` markers are drawn as plain text.
     std::string tooltip;
+    /// Replaces the tooltip text while `is_enabled` returns false.
     std::string disabled_reason;
     Icon icon = Icon::none();
+    /// Display only; it does not bind a key.
     std::string shortcut;
+    /// Extra search terms.
     std::vector<std::string> keywords;
     ItemKind kind = ItemKind::Action;
     std::string radio_group;

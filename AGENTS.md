@@ -42,7 +42,7 @@ live window (agents usually lack screen-recording permission):
 
 Scenarios: `open-layout`, `menu-edit`, `marking-n2`, `open-close`, `submenu`,
 `submenu-cameras`, `marking-invoke`, `marking-disabled`, `mark-ahead`,
-`theme-shape`, `tour`. Add `--shape square`, `--theme light`, `--time S`,
+`theme-shape`, `tour`, `search`, `keyboard`, `recent`. Add `--shape square`, `--theme light`, `--time S`,
 `--motion 0.1`, `--icons public` and `--frames N --sequence DIR` as needed.
 Measure in device pixels (2× scale means 1 pt = 2 px).
 
@@ -53,6 +53,8 @@ Measure in device pixels (2× scale means 1 pt = 2 px).
 | `include/hotbox/` | Public API. `hotbox.hpp` is the umbrella header. |
 | `src/geometry.*`, `src/gesture.*`, `src/state.*` | Pure logic: zones, sectors, hysteresis, stroke recogniser, trigger state machine. **No ImGui calls**; unit-tested directly. |
 | `src/registry.cpp`, `src/layout.cpp` | Item registry, menus, menu sets, marking slots, the layout text format. |
+| `src/search.*` | Fuzzy matching, ranking and command history (recents, frecency). **No ImGui calls.** |
+| `src/persistence.*` | The `imgui.ini` settings handler for saved hotbox state. |
 | `src/overlay.*` | Lays out rows, dropdowns and marking menus, and does hit testing. Row, pitch and dropdown constants live here. |
 | `src/paint.*`, `src/atlas.*`, `src/icons.cpp` | Drawing primitives, shadows, text, icon rasterising into the font atlas. |
 | `src/hotbox.cpp` | `Hotbox::frame()`: input, state, dispatch queue, draw order. |
@@ -73,6 +75,9 @@ Measure in device pixels (2× scale means 1 pt = 2 px).
 - **Font sizes:** ImGui 1.92's stb/FreeType loaders treat the requested size
   as ascent + descent, not em. Inter is about 1.21 em per ImGui size unit.
   Always convert design em sizes with `hotbox::fonts::imgui_size(font, em)`.
+- **Keys while open:** the hook locks Tab, the arrows, Enter, Backspace and
+  Esc to itself. Read them with `Impl::Pressed()`, which passes the hook's
+  owner ID; `ImGui::IsKeyPressed(key)` returns false for a locked key.
 - **Callbacks** are queued and dispatched at the end of `Hotbox::frame()`.
   Registry changes made during a frame become visible on the next frame.
   Keep it that way.

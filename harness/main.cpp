@@ -24,7 +24,7 @@ namespace {
 
 enum class Preview {
     None, Open, Edit, Marking, OpenClose, Submenu, Cameras, MarkingInvoke, MarkingDisabled, MarkAhead, ThemeShape,
-    Tour,
+    Tour, Search, Keyboard, Recent,
 };
 
 struct Options {
@@ -73,6 +73,9 @@ Options ParseOptions(int argc, char** argv) {
             else if (value == "mark-ahead") options.preview = Preview::MarkAhead;
             else if (value == "theme-shape") options.preview = Preview::ThemeShape;
             else if (value == "tour") options.preview = Preview::Tour;
+            else if (value == "search") options.preview = Preview::Search;
+            else if (value == "keyboard") options.preview = Preview::Keyboard;
+            else if (value == "recent") options.preview = Preview::Recent;
             else throw std::invalid_argument("Unknown hotbox scenario " + std::string(value));
         } else if (argument == "--scale") {
             options.scale = ReadNumber(argv[index], argument, 0.5f, 4);
@@ -336,7 +339,30 @@ void FeedPreview(Preview preview, int rendered, ImGuiIO& io) {
         return;
     }
     io.DeltaTime = 1.0f / 60.0f;
-    if (preview == Preview::Open || preview == Preview::OpenClose || preview == Preview::ThemeShape) {
+    const auto press = [&](ImGuiKey key, int frame) {
+        if (rendered == frame || rendered == frame + 1)
+            io.AddKeyEvent(key, rendered == frame);
+    };
+    if (preview == Preview::Search) {
+        io.AddMousePosEvent(280, 220);
+        if (rendered == 3) {
+            io.AddInputCharacter('d');
+            io.AddInputCharacter('u');
+        }
+    } else if (preview == Preview::Keyboard) {
+        // File, then Edit, then down its dropdown to the disabled Delete History and its tooltip.
+        io.AddMousePosEvent(280, 220);
+        press(ImGuiKey_Tab, 3);
+        press(ImGuiKey_RightArrow, 6);
+        press(ImGuiKey_Enter, 9);
+        for (int step = 0; step < 5; ++step)
+            press(ImGuiKey_DownArrow, 12 + 3 * step);
+    } else if (preview == Preview::Recent) {
+        io.AddMousePosEvent(280, 220);
+        press(ImGuiKey_LeftArrow, 3);
+        press(ImGuiKey_LeftArrow, 6);
+        press(ImGuiKey_Enter, 9);
+    } else if (preview == Preview::Open || preview == Preview::OpenClose || preview == Preview::ThemeShape) {
         io.AddMousePosEvent(280, 220);
     } else if (preview == Preview::Edit) {
         io.AddMousePosEvent(rendered < 3 ? 280.0f : 335.0f, rendered < 3 ? 220.0f : 306.0f);
@@ -384,7 +410,8 @@ int Run(const Options& options) {
 
     auto& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = nullptr;
+    // The interactive harness keeps recent commands and hotbox options between runs.
+    io.IniFilename = options.preview == Preview::None ? "hotbox_harness.ini" : nullptr;
     // The demo supplies its own first-use position. Seed it inside the harness window.
     ImGui::LoadIniSettingsFromMemory("[Window][Dear ImGui Demo]\n"
         "Pos=352,24\nSize=584,552\nCollapsed=0\n");
@@ -402,6 +429,9 @@ int Run(const Options& options) {
         item.icon = hotbox::Icon::texture(texture_icon.ref(), {16, 16});
     });
     hotbox::Hotbox widget(demo.registry);
+    if (options.preview == Preview::Recent)
+        widget.import_state("Recent=edit.duplicate\nRecent=edit-mesh.extrude\nRecent=view.frame\n"
+            "Recent=edit.delete-history\nRecent=create.cube\n");
     widget.set_theme(light, dark);
     auto mode = options.theme.value_or(options.preview == Preview::None
         ? hotbox::ThemeMode::System : hotbox::ThemeMode::Dark);
@@ -419,7 +449,8 @@ int Run(const Options& options) {
     auto previous_shape = hotbox::ShapeSetting::Rounded;
     const bool menu_preview = options.preview == Preview::Open || options.preview == Preview::Edit ||
         options.preview == Preview::OpenClose || options.preview == Preview::Submenu ||
-        options.preview == Preview::Cameras || options.preview == Preview::ThemeShape;
+        options.preview == Preview::Cameras || options.preview == Preview::ThemeShape ||
+        options.preview >= Preview::Search;
     while (!glfwWindowShouldClose(window.get()) && !gpu.failed()) {
         if (options.preview == Preview::None && !options.frames && !widget.is_animating())
             glfwWaitEventsTimeout(1.0 / 60);

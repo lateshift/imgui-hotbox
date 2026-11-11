@@ -14,6 +14,9 @@ struct TourInput {
     bool space = false;   // Space held.
     std::string_view caption;
     float caption_age = 0; // Seconds since the caption appeared.
+    std::string_view typed; // Everything typed so far in the current search.
+    bool enter = false;     // Enter held.
+    bool show_enter = false; // Draw an Enter key cap next to ⌥ and Space.
 };
 
 /// Frame rate of the tour. The harness advances ImGui by 1 / tour_fps per frame.

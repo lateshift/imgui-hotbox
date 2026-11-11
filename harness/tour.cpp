@@ -23,6 +23,7 @@ constexpr std::string_view menu_caption = "Click a menu, then release Space over
 constexpr std::string_view mark_caption = "Press in a zone, drag toward a command, release";
 constexpr std::string_view flick_caption = "Once you know it, just flick: the menu never appears";
 constexpr std::string_view sets_caption = "The centre button switches menu sets";
+constexpr std::string_view search_caption = "Or just type to search every command, then press Enter";
 
 /// A pointer target and the button and key state from `time` on. The pointer
 /// eases from the previous key's position, arriving at `time`.
@@ -31,6 +32,8 @@ struct Key {
     ImVec2 pointer;
     bool left, alt, space;
     std::string_view caption;
+    std::string_view typed = {};
+    bool enter = false;
 };
 
 constexpr std::array keys{
@@ -45,8 +48,8 @@ constexpr std::array keys{
     Key{3.17f, edit_title, false, true, true, menu_caption},
     Key{3.5f, edit_title, false, true, true, menu_caption},
     Key{4.0f, duplicate_row, false, true, true, menu_caption},
-    Key{4.6f, duplicate_row, false, true, false, menu_caption},
-    Key{4.65f, duplicate_row, false, false, false, menu_caption},
+    Key{4.3f, duplicate_row, false, true, false, menu_caption},
+    Key{4.35f, duplicate_row, false, false, false, menu_caption},
     Key{5.4f, duplicate_row, false, false, false, mark_caption},
     Key{5.9f, origin, false, false, false, mark_caption},
     Key{6.1f, origin, false, true, false, mark_caption},
@@ -80,9 +83,19 @@ constexpr std::array keys{
     Key{15.57f, rigging_row, false, true, true, sets_caption},
     Key{16.6f, rigging_row, false, true, false, sets_caption},
     Key{16.65f, rigging_row, false, false, false, sets_caption},
-    Key{17.3f, rigging_row, false, false, false, {}},
-    Key{18.0f, rest, false, false, false, {}},
-    Key{18.4f, rest, false, false, false, {}},
+    Key{17.3f, rigging_row, false, false, false, search_caption},
+    Key{17.8f, origin, false, false, false, search_caption},
+    Key{18.0f, origin, false, true, false, search_caption},
+    Key{18.05f, origin, false, true, true, search_caption},
+    Key{18.6f, origin, false, true, true, search_caption, "e"},
+    Key{18.75f, origin, false, true, true, search_caption, "ex"},
+    Key{18.9f, origin, false, true, true, search_caption, "ext"},
+    Key{19.4f, origin, false, false, false, search_caption, "ext"},
+    Key{20.1f, origin, false, false, false, search_caption, "ext", true},
+    Key{20.17f, origin, false, false, false, search_caption, "ext"},
+    Key{20.9f, origin, false, false, false, {}},
+    Key{21.6f, rest, false, false, false, {}},
+    Key{22.0f, rest, false, false, false, {}},
 };
 
 float Smooth(float t) {
@@ -127,6 +140,9 @@ TourInput TourAt(float seconds) {
     const auto next = std::ranges::upper_bound(keys, seconds, {}, &Key::time);
     const auto& current = *std::prev(next);
     TourInput input{current.pointer, current.left, current.alt, current.space, current.caption};
+    input.typed = current.typed;
+    input.enter = current.enter;
+    input.show_enter = current.caption == search_caption;
     if (next != keys.end()) {
         const float t = Smooth((seconds - current.time) / (next->time - current.time));
         input.pointer = {current.pointer.x + (next->pointer.x - current.pointer.x) * t,
@@ -149,6 +165,12 @@ void FeedTour(const TourInput& previous, const TourInput& current, ImGuiIO& io) 
         io.AddKeyEvent(ImGuiKey_Space, current.space);
     if (current.left != previous.left)
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, current.left);
+    if (current.typed.size() > previous.typed.size() && current.typed.starts_with(previous.typed)) {
+        for (const char ch : current.typed.substr(previous.typed.size()))
+            io.AddInputCharacter(static_cast<unsigned char>(ch));
+    }
+    if (current.enter != previous.enter)
+        io.AddKeyEvent(ImGuiKey_Enter, current.enter);
 }
 
 void DrawTourOverlay(ImDrawList& draw, const hotbox::Theme& theme, const hotbox::fonts::Faces& faces,
@@ -158,7 +180,9 @@ void DrawTourOverlay(ImDrawList& draw, const hotbox::Theme& theme, const hotbox:
     const float bottom = display.y - 24;
 
     float x = KeyCap(draw, theme, font, size, {24, bottom - 28}, "⌥", input.alt);
-    KeyCap(draw, theme, font, size, {x + 6, bottom - 28}, "Space", input.space);
+    x = KeyCap(draw, theme, font, size, {x + 6, bottom - 28}, "Space", input.space);
+    if (input.show_enter)
+        KeyCap(draw, theme, font, size, {x + 6, bottom - 28}, "Enter", input.enter);
 
     if (!input.caption.empty()) {
         const float alpha = std::clamp(input.caption_age / 0.2f, 0.0f, 1.0f);

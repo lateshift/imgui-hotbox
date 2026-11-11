@@ -5,6 +5,7 @@
 #include "geometry.hpp"
 #include "gesture.hpp"
 #include "registry_data.hpp"
+#include "search.hpp"
 #include "state.hpp"
 
 #include <cmath>
@@ -201,4 +202,93 @@ TEST_CASE("Menu and marking layouts round-trip and a parse failure keeps the pre
     CHECK(restored.save_layout() == expected);
     CHECK_THROWS_AS(restored.load_layout("menu edit \"Edit\"\nsubmenu group \"Group\""), std::invalid_argument);
     CHECK(restored.save_layout() == expected);
+}
+
+TEST_CASE("Search matches prefixes before word starts, substrings and scattered letters, ignoring case and accents") {
+    const auto score = [](std::string_view token, std::string_view text) { return MatchScore(token, text).value_or(0); };
+    CHECK(score("dup", "Duplicate") > score("dup", "Edit Duplicate"));
+    CHECK(score("dup", "Edit Duplicate") > score("lic", "Duplicate"));
+    CHECK(score("lic", "Duplicate") > score("dpl", "Duplicate"));
+    CHECK(score("dc", "Duplicate Copy") > score("dc", "Ducky"));
+    CHECK(score("ex", "extrudeFaces") > 0.9f);
+    CHECK(score("f", "extrudeFaces") > score("x", "extrudeFaces"));
+    CHECK(MatchScore("cafe", "Caf\xC3\xA9 Lighting"));
+    CHECK(MatchScore("CAFE", "caf\xC3\xA9"));
+    CHECK(MatchScore("lodz", "\xC5\x81\xC3\xB3" "d\xC5\xBA"));
+    CHECK_FALSE(MatchScore("xyz", "Duplicate"));
+    CHECK_FALSE(MatchScore("duplicates", "Duplicate"));
+    CHECK(score("Dup", "Duplicate") == score("dup", "Duplicate"));
+}
+
+TEST_CASE("Search ranks every token across labels, keywords and paths, boosted by frecency") {
+    const std::vector<std::string> clone{"clone", "copy"};
+    const std::vector<SearchEntry> entries{
+        {"edit.delete", "Delete", "Delete the selection", "Edit", {}},
+        {"edit.duplicate", "Duplicate", "Duplicate the selection", "Edit", clone},
+        {"mesh.combine", "Combine", "Merge meshes", "Mesh", {}},
+    };
+    History history;
+    std::vector<SearchHit> hits;
+    const auto ids = [&] {
+        std::vector<std::string_view> out;
+        for (const auto& hit : hits)
+            out.push_back(entries[hit.entry].id);
+        return out;
+    };
+    RankSearch(entries, "d", history, 1000, 8, hits);
+    CHECK(ids() == std::vector<std::string_view>{"edit.delete", "edit.duplicate"});
+    RankSearch(entries, "clone", history, 1000, 8, hits);
+    CHECK(ids() == std::vector<std::string_view>{"edit.duplicate"});
+    RankSearch(entries, "mesh merge", history, 1000, 8, hits);
+    CHECK(ids() == std::vector<std::string_view>{"mesh.combine"});
+    RankSearch(entries, "edit zz", history, 1000, 8, hits);
+    CHECK(hits.empty());
+    RankSearch(entries, "   ", history, 1000, 8, hits);
+    CHECK(hits.empty());
+    history.record("edit.duplicate", 1000);
+    RankSearch(entries, "d", history, 1000, 8, hits);
+    CHECK(ids() == std::vector<std::string_view>{"edit.duplicate", "edit.delete"});
+    RankSearch(entries, "e", history, 1000, 1, hits);
+    CHECK(hits.size() == 1);
+}
+
+TEST_CASE("History keeps eight recent commands, decays frecency by age and round-trips as text") {
+    constexpr std::int64_t hour = 3600, day = 24 * hour;
+    History history;
+    for (int i = 0; i < 10; ++i)
+        history.record("command." + std::to_string(i), 100 * day);
+    history.record("command.3", 100 * day);
+    REQUIRE(history.recent().size() == History::recent_limit);
+    CHECK(history.recent().front() == "command.3");
+    CHECK(history.recent()[1] == "command.9");
+    CHECK(std::ranges::find(history.recent(), "command.1") == history.recent().end());
+
+    History ages;
+    const std::int64_t now = 100 * day;
+    ages.record("a", now - hour);       // ×4
+    ages.record("a", now - 2 * day);    // ×1
+    ages.record("a", now - 30 * day);   // ×0.5
+    ages.record("b", now - 12 * hour);  // ×2
+    CHECK(ages.frecency("a", now) == doctest::Approx(5.5));
+    CHECK(ages.frecency("b", now) == doctest::Approx(2));
+    CHECK(ages.frecency("missing", now) == 0);
+    for (int i = 0; i < 20; ++i)
+        ages.record("c", now);
+    CHECK(ages.frecency("c", now) == doctest::Approx(4 * History::uses_per_command));
+
+    std::string text;
+    ages.write(text);
+    History restored;
+    for (std::size_t start = 0; start < text.size();) {
+        const auto end = text.find('\n', start);
+        CHECK(restored.read(std::string_view(text).substr(start, end - start)));
+        start = end + 1;
+    }
+    std::string again;
+    restored.write(again);
+    CHECK(again == text);
+    CHECK(restored.frecency("a", now) == doctest::Approx(5.5));
+    CHECK_FALSE(restored.read("MenuSet=Modeling"));
+    CHECK(restored.read("Use=12,bad command.with spaces"));
+    CHECK(restored.frecency("command.with spaces", 12) == doctest::Approx(4));
 }

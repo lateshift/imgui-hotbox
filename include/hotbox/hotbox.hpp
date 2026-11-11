@@ -7,6 +7,10 @@
 #include <hotbox/config.hpp>
 #include <hotbox/registry.hpp>
 
+#include <span>
+#include <string>
+#include <string_view>
+
 namespace hotbox {
 
 struct MotionPrefs {
@@ -43,6 +47,16 @@ public:
     void set_system_appearance_provider(std::function<ThemeMode()> provider);
     /// The resolved theme target. System appearance is refreshed during frame().
     const Theme& current_theme() const;
+
+    /// Recently invoked commands, most recent first, at most eight.
+    std::span<const CommandId> recent_commands() const;
+    /// Forget recent commands and the use counts that rank search results.
+    void clear_history();
+    /// The state saved in imgui.ini (recent commands, use times, menu set, row options) as text,
+    /// for hosts that keep their settings elsewhere.
+    std::string export_state() const;
+    /// Replace the state with text from export_state(). Unknown lines are ignored.
+    void import_state(std::string_view state);
 
     std::function<void()> on_open, on_close, on_trigger_tap;
     std::function<void(const InvokeContext&)> on_invoked;
