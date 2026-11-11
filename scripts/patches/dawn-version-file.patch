@@ -1,0 +1,11 @@
+--- a/src/dawn/CMakeLists.txt
++++ b/src/dawn/CMakeLists.txt
+@@ -36,6 +36,8 @@ DawnGenerator(
+     EXTRA_PARAMETERS "gen"
+          "--dawn-dir"
+          "${Dawn_SOURCE_DIR}"
++         "--version-file"
++         "${Dawn_SOURCE_DIR}/../dawn-revision"
+          "--version-json"
+          "${Dawn_SOURCE_DIR}/src/dawn/dawn_version.json"
+ )

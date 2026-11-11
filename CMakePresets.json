@@ -1,0 +1,52 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "debug",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "macos-debug",
+      "inherits": "debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" }
+    },
+    {
+      "name": "windows-debug",
+      "inherits": "debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-debug",
+      "inherits": "debug",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "asan",
+      "inherits": "debug",
+      "cacheVariables": { "HOTBOX_SANITIZER": "address", "HOTBOX_BUILD_HARNESS": "OFF" }
+    },
+    {
+      "name": "ubsan",
+      "inherits": "debug",
+      "cacheVariables": { "HOTBOX_SANITIZER": "undefined", "HOTBOX_BUILD_HARNESS": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "macos-debug", "configurePreset": "macos-debug" },
+    { "name": "windows-debug", "configurePreset": "windows-debug" },
+    { "name": "linux-debug", "configurePreset": "linux-debug" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "ubsan", "configurePreset": "ubsan" }
+  ],
+  "testPresets": [
+    { "name": "macos-debug", "configurePreset": "macos-debug", "output": { "outputOnFailure": true } },
+    { "name": "windows-debug", "configurePreset": "windows-debug", "output": { "outputOnFailure": true } },
+    { "name": "linux-debug", "configurePreset": "linux-debug", "output": { "outputOnFailure": true } },
+    { "name": "asan", "configurePreset": "asan", "output": { "outputOnFailure": true } },
+    { "name": "ubsan", "configurePreset": "ubsan", "output": { "outputOnFailure": true } }
+  ]
+}

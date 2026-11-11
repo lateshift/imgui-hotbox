@@ -1,0 +1,12 @@
+diff --git a/im_anim.cpp b/im_anim.cpp
+index af8f37edb..0c663295d 100644
+--- a/im_anim.cpp
++++ b/im_anim.cpp
+@@ -670 +670,6 @@ struct pool_t {
+-	T* try_get(ImGuiID key) { return pool.GetByKey(key); }  // Returns nullptr if not found
++	T* try_get(ImGuiID key) {
++		T* c = pool.GetByKey(key);
++		if (c != nullptr)
++			c->last_seen_frame = frame;
++		return c;
++	}

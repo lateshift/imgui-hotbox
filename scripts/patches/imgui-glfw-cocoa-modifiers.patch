@@ -1,0 +1,26 @@
+diff --git a/backends/imgui_impl_glfw.cpp b/backends/imgui_impl_glfw.cpp
+index b5347cda0..c1c765a04 100644
+--- a/backends/imgui_impl_glfw.cpp
++++ b/backends/imgui_impl_glfw.cpp
+@@ -465 +465 @@ ImGuiKey ImGui_ImplGlfw_KeyToImGuiKey(int keycode, int scancode)
+-static void ImGui_ImplGlfw_UpdateKeyModifiers(ImGuiIO& io, GLFWwindow* window)
++static void ImGui_ImplGlfw_UpdateKeyModifiers(ImGuiIO& io, GLFWwindow* window, int mods)
+@@ -466,0 +467,10 @@ static void ImGui_ImplGlfw_UpdateKeyModifiers(ImGuiIO& io, GLFWwindow* window)
++#ifdef __APPLE__
++    // Cocoa events include the modifiers even if the window did not receive a
++    // separate flagsChanged event (for example, when Option preceded focus).
++    IM_UNUSED(window);
++    io.AddKeyEvent(ImGuiMod_Ctrl,  (mods & GLFW_MOD_CONTROL) != 0);
++    io.AddKeyEvent(ImGuiMod_Shift, (mods & GLFW_MOD_SHIFT) != 0);
++    io.AddKeyEvent(ImGuiMod_Alt,   (mods & GLFW_MOD_ALT) != 0);
++    io.AddKeyEvent(ImGuiMod_Super, (mods & GLFW_MOD_SUPER) != 0);
++#else
++    IM_UNUSED(mods);
+@@ -470,0 +481 @@ static void ImGui_ImplGlfw_UpdateKeyModifiers(ImGuiIO& io, GLFWwindow* window)
++#endif
+@@ -489 +500 @@ void ImGui_ImplGlfw_MouseButtonCallback(GLFWwindow* window, int button, int acti
+-    ImGui_ImplGlfw_UpdateKeyModifiers(io, window);
++    ImGui_ImplGlfw_UpdateKeyModifiers(io, window, mods);
+@@ -553 +564 @@ void ImGui_ImplGlfw_KeyCallback(GLFWwindow* window, int keycode, int scancode, i
+-    ImGui_ImplGlfw_UpdateKeyModifiers(io, window);
++    ImGui_ImplGlfw_UpdateKeyModifiers(io, window, mods);

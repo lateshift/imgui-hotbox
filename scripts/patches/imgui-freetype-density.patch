@@ -1,0 +1,25 @@
+diff --git a/misc/freetype/imgui_freetype.cpp b/misc/freetype/imgui_freetype.cpp
+index 3c817d20f..b19bb4797 100644
+--- a/misc/freetype/imgui_freetype.cpp
++++ b/misc/freetype/imgui_freetype.cpp
+@@ -201 +201 @@ bool ImGui_ImplFreeType_FontSrcData::InitFont(FT_Library ft_library, const ImFon
+-    if (UserFlags & ImGuiFreeTypeLoaderFlags_LightHinting)
++    if (UserFlags & (ImGuiFreeTypeLoaderFlags_LightHinting | ImGuiFreeTypeLoaderFlags_HintByDensity))
+@@ -223 +223 @@ void ImGui_ImplFreeType_FontSrcData::CloseFont()
+-static const FT_Glyph_Metrics* ImGui_ImplFreeType_LoadGlyph(ImGui_ImplFreeType_FontSrcData* src_data, uint32_t codepoint)
++static const FT_Glyph_Metrics* ImGui_ImplFreeType_LoadGlyph(ImGui_ImplFreeType_FontSrcData* src_data, uint32_t codepoint, float density)
+@@ -234 +234,4 @@ static const FT_Glyph_Metrics* ImGui_ImplFreeType_LoadGlyph(ImGui_ImplFreeType_F
+-    FT_Error error = FT_Load_Glyph(src_data->FtFace, glyph_index, src_data->LoadFlags);
++    FT_Int32 load_flags = src_data->LoadFlags;
++    if ((src_data->UserFlags & ImGuiFreeTypeLoaderFlags_HintByDensity) && density >= 2.0f)
++        load_flags = (load_flags & ~FT_LOAD_TARGET_LIGHT) | FT_LOAD_NO_HINTING;
++    FT_Error error = FT_Load_Glyph(src_data->FtFace, glyph_index, load_flags);
+@@ -501 +504 @@ static bool ImGui_ImplFreeType_FontBakedLoadGlyph(ImFontAtlas* atlas, ImFontConf
+-    const FT_Glyph_Metrics* metrics = ImGui_ImplFreeType_LoadGlyph(bd_font_data, codepoint);
++    const FT_Glyph_Metrics* metrics = ImGui_ImplFreeType_LoadGlyph(bd_font_data, codepoint, baked->RasterizerDensity);
+diff --git a/misc/freetype/imgui_freetype.h b/misc/freetype/imgui_freetype.h
+index 85313699d..2298fbde3 100644
+--- a/misc/freetype/imgui_freetype.h
++++ b/misc/freetype/imgui_freetype.h
+@@ -40,0 +41 @@ enum ImGuiFreeTypeLoaderFlags_
++    ImGuiFreeTypeLoaderFlags_HintByDensity = 1 << 10,  // Hotbox: light hinting below 2x, unhinted at 2x and above.
