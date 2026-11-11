@@ -1,0 +1,5 @@
+# Patches must keep LF line endings: they are applied to LF sources (Dawn,
+# ImGui, ImAnim) and fail if a Windows checkout converts them to CRLF.
+*.patch text eol=lf
+# Shell scripts run under bash on every platform, including Windows CI.
+*.sh text eol=lf
